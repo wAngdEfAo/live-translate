@@ -1,4 +1,4 @@
-package com.yg.livetranslate
+package com.shishifanyi.app
 
 import android.content.Context
 import android.graphics.Canvas

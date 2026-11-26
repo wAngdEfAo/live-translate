@@ -1,4 +1,4 @@
-package com.yg.livetranslate
+package com.shishifanyi.app
 
 import com.google.mlkit.nl.languageid.LanguageIdentification
 

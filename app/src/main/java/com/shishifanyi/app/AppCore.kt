@@ -1,4 +1,4 @@
-package com.yg.livetranslate
+package com.shishifanyi.app
 
 import android.content.Context
 import android.os.Handler
@@ -26,6 +26,13 @@ object AppCore {
 
     @Volatile
     private var lastCaptureAt: Long = 0L
+
+    /** 连续几次没有可用内容后，暂缓取词，避免空转耗电。 */
+    @Volatile
+    private var emptyStreak = 0
+
+    @Volatile
+    private var backoffUntil = 0L
 
     private const val MIN_CAPTURE_GAP = 600L
 
@@ -60,15 +67,52 @@ object AppCore {
         return c.resources.displayMetrics.heightPixels
     }
 
+    /** 处理区域的上下边界（相对屏幕顶部）。 */
+    fun regionBounds(): Pair<Int, Int> {
+        val h = screenHeight()
+        val r = Prefs.regionRatio
+        return if (Prefs.regionFromTop) {
+            Pair(0, (h * r).toInt())
+        } else {
+            Pair((h * (1f - r)).toInt(), h)
+        }
+    }
+
     /**
      * 无障碍读到的一屏文字块。
      * OCR 可用时优先用 OCR 行框（像素级准确），节点矩形只作兜底。
      */
     fun onBlocks(blocks: List<TextBlock>) {
         if (!Prefs.translating) return
-        val maxY = (screenHeight() * 0.6f).toInt()
+        val (topY, maxY) = regionBounds()
 
-        val filtered = TextPipeline.filter(blocks, maxY, Prefs.srcLang)
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now < backoffUntil) return
+
+        val stats = FilterStats()
+        val filtered = TextPipeline.mergeLines(
+            TextPipeline.filter(blocks, maxY, Prefs.srcLang, topY, stats),
+            30
+        )
+        Log.d(
+            TAG,
+            "取词 " + blocks.size + " 块，可用 " + filtered.size + "（" + stats.brief() + "）"
+        )
+
+        if (filtered.size <= 2 && stats.samples.isNotEmpty()) {
+            Log.d(TAG, "丢弃样例 " + stats.samples.joinToString(" / "))
+        }
+
+        if (filtered.isEmpty()) {
+            emptyStreak++
+            // 连续 3 次空白就退避：避免屏幕静止时反复抓取
+            if (emptyStreak >= 3) {
+                backoffUntil = now + 5000L
+                Log.d(TAG, "连续无内容，暂停取词 5 秒")
+            }
+        } else {
+            emptyStreak = 0
+        }
 
         if (filtered.isEmpty()) {
             // 无障碍读不到字，才动 OCR
@@ -123,6 +167,9 @@ object AppCore {
                 src = detected
             }
 
+            val t0 = android.os.SystemClock.elapsedRealtime()
+            var failed = 0
+            var firstErr = ""
             val pairs = ArrayList<Pair<TextBlock, String>>(blocks.size)
             for (b in blocks) {
                 // 命中缓存的不再调用模型
@@ -142,8 +189,19 @@ object AppCore {
                     latch.countDown()
                 }
                 latch.await(4, TimeUnit.SECONDS)
-                if (ok) pairs.add(Pair(b, zh))
+                if (ok) {
+                    pairs.add(Pair(b, zh))
+                } else {
+                    failed++
+                    if (firstErr.isEmpty()) firstErr = b.text.take(24)
+                }
             }
+            val cost = android.os.SystemClock.elapsedRealtime() - t0
+            Log.d(
+                TAG,
+                "翻译 " + pairs.size + "/" + blocks.size + " 块，耗时 " + cost + "ms，语言 " + src +
+                    (if (failed > 0) "，失败 " + failed + " 块，样例「" + firstErr + "」" else "")
+            )
             main.post {
                 if (!Prefs.translating) return@post
                 if (pairs.isEmpty()) return@post

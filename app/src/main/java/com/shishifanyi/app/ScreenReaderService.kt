@@ -1,4 +1,4 @@
-package com.yg.livetranslate
+package com.shishifanyi.app
 
 import android.accessibilityservice.AccessibilityService
 import android.graphics.Rect
@@ -99,13 +99,10 @@ class ScreenReaderService : AccessibilityService() {
         nodeBudget++
         if (nodeBudget > 800) return
 
+        // 只取可见文字；contentDescription 是读屏描述（图标名、按钮说明），
+        // 屏幕上并不显示，翻它会凭空盖住图标
         val t = node.text?.toString()?.trim()
-        if (!t.isNullOrEmpty()) {
-            addBlock(node, t)
-        } else {
-            val c = node.contentDescription?.toString()?.trim()
-            if (!c.isNullOrEmpty()) addBlock(node, c)
-        }
+        if (!t.isNullOrEmpty()) addBlock(node, t)
 
         val n = node.childCount
         for (i in 0 until n) {

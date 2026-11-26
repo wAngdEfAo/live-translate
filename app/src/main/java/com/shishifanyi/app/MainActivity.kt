@@ -1,4 +1,4 @@
-package com.yg.livetranslate
+package com.shishifanyi.app
 
 import android.app.Activity
 import android.content.ClipData
@@ -477,6 +477,17 @@ class MainActivity : Activity() {
                         }
                     }
                 }
+                // 写入完成后，为每个模型目录补写 ML Kit 登记
+                var registered = 0
+                for (dirName in ModelRegistry.localModelDirs(this)) {
+                    val langs = ModelRegistry.langsOf(dirName)
+                    if (langs != null) {
+                        val pair = langs.first + "_" + langs.second
+                        val hash = ModelRegistry.officialHash(this, pair)
+                        if (ModelRegistry.register(this, dirName, hash)) registered++
+                    }
+                }
+
                 runOnUiThread {
                     storageDirs?.postDelayed({ refreshStorage() }, 300L)
                     packState?.text = "校验中"
@@ -486,8 +497,11 @@ class MainActivity : Activity() {
                             packState?.text = if (ok) "已就绪" else "导入未生效"
                             packState?.setTextColor(color(if (ok) R.color.ok else R.color.warn))
                             toast(
-                                if (ok) "导入成功，共 $count 个文件"
-                                else "写入了 $count 个文件，但语言包仍未识别"
+                                when {
+                                    ok -> "导入成功，共 $count 个文件"
+                                    registered > 0 -> "已写入并登记 $count 个文件，若仍不可用请重启 App"
+                                    else -> "写入了 $count 个文件，但缺少模型登记"
+                                }
                             )
                         }
                     }
@@ -841,17 +855,37 @@ class MainActivity : Activity() {
         ovState?.text = if (ovOn) "已开启" else "未开启"
         ovState?.setTextColor(color(if (ovOn) R.color.ok else R.color.warn))
 
+        val src = Prefs.srcLang
         if (LanguagePack.ready) {
             packState?.text = "已就绪"
             packState?.setTextColor(color(R.color.ok))
-        } else if (LanguagePack.busy) {
-            packState?.text = "下载中"
-            packState?.setTextColor(color(R.color.accent))
-        } else {
-            packState?.text = "未下载"
-            packState?.setTextColor(color(R.color.warn))
+            return finishRefresh()
         }
+        // 如实问 ML Kit：能翻就是就绪，不再凭文件存在猜
+        LanguagePack.isDownloaded(src) { downloaded ->
+            runOnUiThread {
+                when {
+                    downloaded -> {
+                        LanguagePack.ready = true
+                        packState?.text = "已就绪"
+                        packState?.setTextColor(color(R.color.ok))
+                    }
+                    LanguagePack.busy -> {
+                        packState?.text = "下载中"
+                        packState?.setTextColor(color(R.color.accent))
+                    }
+                    else -> {
+                        packState?.text = "未下载"
+                        packState?.setTextColor(color(R.color.warn))
+                    }
+                }
+                finishRefresh()
+            }
+        }
+        return
+    }
 
+    private fun finishRefresh() {
         refreshStorage()
         refreshLangRows()
 

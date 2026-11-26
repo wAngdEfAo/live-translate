@@ -1,4 +1,4 @@
-package com.yg.livetranslate
+package com.shishifanyi.app
 
 import android.os.Handler
 import android.os.Looper
@@ -43,7 +43,6 @@ object LanguagePack {
 
     @Volatile
     var ready: Boolean = false
-        private set
 
     @Volatile
     var busy: Boolean = false

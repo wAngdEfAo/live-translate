@@ -6,4 +6,4 @@
     android:canRetrieveWindowContent="true"
     android:description="@string/acc_desc"
     android:notificationTimeout="300"
-    android:settingsActivity="com.yg.livetranslate.MainActivity" />
+    android:settingsActivity="com.shishifanyi.app.MainActivity" />

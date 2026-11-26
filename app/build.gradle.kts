@@ -4,15 +4,15 @@ plugins {
 }
 
 android {
-    namespace = "com.yg.livetranslate"
+    namespace = "com.shishifanyi.app"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.yg.livetranslate"
+        applicationId = "com.shishifanyi.app"
         minSdk = 24
         targetSdk = 36
-        versionCode = 26
-        versionName = "3.5"
+        versionCode = 40
+        versionName = "4.7"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")

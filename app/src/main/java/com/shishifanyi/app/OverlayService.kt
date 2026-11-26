@@ -1,4 +1,6 @@
-package com.yg.livetranslate
+package com.shishifanyi.app
+
+import android.util.Log
 
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.Notification
@@ -84,6 +86,8 @@ class OverlayService : Service() {
     private lateinit var wm: WindowManager
     private var blockLayer: FrameLayout? = null
     private var lineWin: View? = null
+    private var lineLabel: TextView? = null
+    private var dirBtn: TextView? = null
     private var bar: LinearLayout? = null
     private var barLp: WindowManager.LayoutParams? = null
     private var historyWin: View? = null
@@ -91,7 +95,39 @@ class OverlayService : Service() {
 
     private var screenW = 0
     private var screenH = 0
+    private var regionTop = 0
     private var regionH = 0
+
+    /** 实时读取块层窗口在屏幕上的 y 原点，避免一次性测量后失效。 */
+    private fun liveLayerOffsetY(): Int {
+        val l = blockLayer ?: return insetY
+        return try {
+            val loc = IntArray(2)
+            l.getLocationOnScreen(loc)
+            loc[1]
+        } catch (t: Throwable) {
+            insetY
+        }
+    }
+
+    /** 只更新分界线位置与标签；块层固定覆盖全屏，靠坐标过滤区域。 */
+    private fun updateRegion() {
+        val (t, b) = AppCore.regionBounds()
+        regionTop = t
+        regionH = b
+        val y = if (Prefs.regionFromTop) b else t
+        val line = lineWin
+        if (line != null) {
+            val lp = line.layoutParams as WindowManager.LayoutParams
+            lp.y = (y - dp(6f) - liveLayerOffsetY()).coerceAtLeast(0)
+            try {
+                wm.updateViewLayout(line, lp)
+            } catch (_: Throwable) {
+            }
+        }
+        val pct = Math.round(Prefs.regionRatio * 100).toString()
+        lineLabel?.text = pct + "% " + (if (Prefs.regionFromTop) "上" else "下")
+    }
 
     private val main = Handler(Looper.getMainLooper())
     private var foregroundStarted = false
@@ -153,7 +189,7 @@ class OverlayService : Service() {
         val layer = FrameLayout(this)
         layer.isClickable = false
         val p = WindowManager.LayoutParams(
-            screenW, regionH, overlayType(),
+            screenW, screenH, overlayType(),
             WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
@@ -186,17 +222,58 @@ class OverlayService : Service() {
         label.setTextColor(0xCC6FB4FF.toInt())
         label.setPadding(dp(4f), 0, dp(4f), 0)
         row.addView(label)
+        lineLabel = label
 
         val p = WindowManager.LayoutParams(
-            screenW, dp(12f), overlayType(),
-            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            screenW, dp(26f), overlayType(),
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         )
         p.gravity = Gravity.TOP or Gravity.START
         p.x = 0
         p.y = regionH - dp(6f)
+        // 上下拖动这条线 = 调整处理区域比例
+        var downRawY = 0f
+        var startY = 0
+        var moved = false
+        row.setOnTouchListener { _, e ->
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downRawY = e.rawY
+                    startY = p.y
+                    moved = false
+                    true
+                }
+
+                MotionEvent.ACTION_MOVE -> {
+                    val dy = e.rawY - downRawY
+                    if (abs(dy) > dp(4f)) moved = true
+                    val lineY = (e.rawY - dp(6f).toFloat()).coerceIn(
+                        dp(40f).toFloat(), (screenH - dp(40f)).toFloat()
+                    )
+                    val sh = screenH.toFloat()
+                    val ratio = if (Prefs.regionFromTop) lineY / sh else 1f - lineY / sh
+                    Prefs.regionRatio = ratio
+                    updateRegion()
+                    renderBlocks(lastBlocks)
+                    true
+                }
+
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (!moved) {
+                        Prefs.regionFromTop = !Prefs.regionFromTop
+                        updateRegion()
+                        AppCore.resetDedupe()
+                        ScreenReaderService.requestCapture()
+                    }
+                    true
+                }
+
+                else -> false
+            }
+        }
+
         try {
             wm.addView(row, p)
             lineWin = row
@@ -227,15 +304,6 @@ class OverlayService : Service() {
                         } catch (_: Throwable) {
                         }
                     }
-                    val lyr = blockLayer
-                    if (lyr != null) {
-                        val lpz = lyr.layoutParams as WindowManager.LayoutParams
-                        lpz.height = (regionH - insetY).coerceAtLeast(dp(40f))
-                        try {
-                            wm.updateViewLayout(lyr, lpz)
-                        } catch (_: Throwable) {
-                        }
-                    }
                     if (lastBlocks.isNotEmpty()) renderBlocks(lastBlocks)
                 }
             } catch (_: Throwable) {
@@ -250,6 +318,15 @@ class OverlayService : Service() {
         row.setPadding(dp(2f), dp(2f), dp(2f), dp(2f))
         row.background = pill(0xD910131A.toInt(), 12f)
 
+        // 拖动把手：整条几乎被按钮占满，必须单独留一块可抓的区域
+        val handle = TextView(this)
+        handle.text = "⠿"
+        handle.textSize = 14f
+        handle.setTextColor(0xFF9AA4B2.toInt())
+        handle.setPadding(dp(8f), dp(6f), dp(10f), dp(6f))
+        handle.isClickable = true
+        row.addView(handle)
+
         toggleBtn = barButton(
             if (Prefs.translating) "暂停" else "开始",
             0xFF6FB4FF.toInt()
@@ -263,6 +340,18 @@ class OverlayService : Service() {
             else ScreenReaderService.requestCapture()
         }
         row.addView(toggleBtn)
+
+        dirBtn = barButton(
+            if (Prefs.regionFromTop) "上↓" else "下↑",
+            0xFFCFD8E3.toInt()
+        ) {
+            Prefs.regionFromTop = !Prefs.regionFromTop
+            AppCore.resetDedupe()
+            updateRegion()
+            dirBtn?.text = if (Prefs.regionFromTop) "上↓" else "下↑"
+            ScreenReaderService.requestCapture()
+        }
+        row.addView(dirBtn)
 
         row.addView(barButton("刷新", 0xFFCFD8E3.toInt()) {
             AppCore.resetDedupe()
@@ -285,6 +374,61 @@ class OverlayService : Service() {
         p.x = if (Prefs.barX >= 0) Prefs.barX else dp(8f)
         p.y = if (Prefs.barY >= 0) Prefs.barY else regionH + dp(6f)
         barLp = p
+
+        var hDownX = 0f
+        var hDownY = 0f
+        var hStartX = 0
+        var hStartY = 0
+        var hMoved = false
+        var hDownAt = 0L
+        handle.setOnTouchListener { _, e ->
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    hDownX = e.rawX
+                    hDownY = e.rawY
+                    hStartX = p.x
+                    hStartY = p.y
+                    hMoved = false
+                    hDownAt = System.currentTimeMillis()
+                    true
+                }
+
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = (e.rawX - hDownX).toInt()
+                    val dy = (e.rawY - hDownY).toInt()
+                    if (abs(dx) > dp(4f) || abs(dy) > dp(4f)) hMoved = true
+                    p.x = hStartX + dx
+                    p.y = hStartY + dy
+                    try {
+                        wm.updateViewLayout(row, p)
+                    } catch (_: Throwable) {
+                    }
+                    true
+                }
+
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    val held = System.currentTimeMillis() - hDownAt
+                    if (!hMoved && held > 600L) {
+                        // 长按把手：复位到默认位置
+                        Prefs.barX = -1
+                        Prefs.barY = -1
+                        p.x = dp(8f)
+                        p.y = regionH + dp(6f) - insetY
+                        try {
+                            wm.updateViewLayout(row, p)
+                        } catch (_: Throwable) {
+                        }
+                        Log.d("Overlay", "控制条已复位")
+                    } else {
+                        Prefs.barX = p.x
+                        Prefs.barY = p.y
+                    }
+                    true
+                }
+
+                else -> false
+            }
+        }
 
         row.isClickable = true
         var downRawX = 0f
@@ -355,15 +499,29 @@ class OverlayService : Service() {
             it.first.rect.width().toLong() * it.first.rect.height().toLong()
         }
         val keptRects = ArrayList<android.graphics.Rect>()
+        val keptTexts = LinkedHashSet<String>()
         val out = ArrayList<Pair<TextBlock, String>>()
         for (p in sorted) {
             val r = p.first.rect
+            // 同一句只保留一块，避免名称同时出现在图标与标题上
+            if (!keptTexts.add(p.first.text)) continue
             val area = (r.width().toLong() * r.height().toLong()).coerceAtLeast(1L)
             var overlapped = 0L
             for (k in keptRects) {
                 val ix = maxOf(0, minOf(r.right, k.right) - maxOf(r.left, k.left))
                 val iy = maxOf(0, minOf(r.bottom, k.bottom) - maxOf(r.top, k.top))
                 overlapped += ix.toLong() * iy.toLong()
+            }
+            // 仅当垂直方向真正重叠时才视为重复，避免把上下两段并成一块
+            var vOverlap = false
+            for (k in keptRects) {
+                val iy = minOf(r.bottom, k.bottom) - maxOf(r.top, k.top)
+                if (iy > r.height() * 6 / 10) vOverlap = true
+            }
+            if (!vOverlap) {
+                keptRects.add(r)
+                out.add(p)
+                continue
             }
             if (overlapped * 100 / area > 60) continue
             keptRects.add(r)
@@ -419,17 +577,11 @@ class OverlayService : Service() {
         if (list.isEmpty()) return
         fitCache.clear()
 
-        // 文本列范围：拿它兜底，防止某些 App 把一行拆成很窄的碎片
-        var colLeft = Int.MAX_VALUE
-        var colRight = 0
-        for (p0 in list) {
-            val rr = p0.first.rect
-            if (rr.left < colLeft) colLeft = rr.left
-            if (rr.right > colRight) colRight = rr.right
-        }
-        if (colLeft == Int.MAX_VALUE) colLeft = 0
-        val colW = colRight - colLeft
-
+        val offY = liveLayerOffsetY()
+        Log.d(
+            "Overlay",
+            "绘制 " + list.size + " 块，区域 " + regionTop + "-" + regionH + "，窗口偏移 " + offY
+        )
         for (pair in list) {
             val r = pair.first.rect
             val en = pair.first.text
@@ -439,25 +591,30 @@ class OverlayService : Service() {
             // 四周外扩，盖住文字抗锯齿边缘，避免英文露出一丝
             val pad = dp(2f)
 
-            // 扣掉窗口内缩，换算成覆盖层内的坐标
-            var top = (r.top - insetY - pad).coerceAtLeast(0)
-            if (top >= regionH) continue
+            // 统一换算成块层内坐标：屏幕坐标 - 窗口内缩
+            val layerTop = (regionTop - offY).coerceAtLeast(0)
+            val layerBottom = (regionH - offY).coerceAtLeast(layerTop + 1)
 
-            // 横向一律铺满文本列：宁可多盖，也不留英文
-            var rawLeft = r.left
-            var rawWidth = r.width()
-            if (colW > dp(80f)) {
-                rawLeft = colLeft
-                rawWidth = colW
-            }
+            val rawTop = r.top - offY - pad
+            val rawBottom = rawTop + r.height() + pad * 2
+            // 完全在区域外：跳过
+            if (rawBottom <= layerTop || rawTop >= layerBottom) continue
+            // 大半在区域外：跳过，避免压到状态栏或边界以外
+            if (rawTop < layerTop && (rawBottom - layerTop) * 2 < r.height()) continue
+
+            var top = maxOf(rawTop, layerTop)
+            val bottom = minOf(rawBottom, layerBottom)
+
+            // 严格按原文字块自身的矩形定位：窄元素（徽标/标签）也保持原位
+            val rawLeft = r.left
+            val rawWidth = r.width()
 
             var left = (rawLeft - pad).coerceAtLeast(0)
             var width = rawWidth + pad * 2
             if (width <= 8) continue
             if (left + width > screenW) width = screenW - left
-            var height = r.height() + pad * 2
-            if (height <= 0) continue
-            if (top + height > regionH) height = regionH - top
+            // 高度取原文矩形（裁到区域内）：整段英文都要被盖住
+            var height = bottom - top
             if (height <= 0) continue
 
             // 1) 按原文在该矩形里的排版反推字号，再整体放大 15%
@@ -478,7 +635,7 @@ class OverlayService : Service() {
 
             // 还是装不下就向下扩块，宁可多盖一点，也不压扁字
             if (h > height) {
-                val room = (regionH - top).coerceAtLeast(height)
+                val room = (layerBottom - top).coerceAtLeast(height)
                 height = h.coerceAtMost(room)
             }
 

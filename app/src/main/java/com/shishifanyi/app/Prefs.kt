@@ -1,4 +1,4 @@
-package com.yg.livetranslate
+package com.shishifanyi.app
 
 import android.content.Context
 import android.content.SharedPreferences
@@ -22,6 +22,16 @@ object Prefs {
     var tgtLang: String
         get() = p.getString("tgt_lang", "zh") ?: "zh"
         set(v) = p.edit().putString("tgt_lang", v).apply()
+
+    /** 处理区域：0~1，从屏幕顶部起算的比例。 */
+    var regionRatio: Float
+        get() = p.getFloat("region_ratio", 0.6f)
+        set(v) = p.edit().putFloat("region_ratio", v.coerceIn(0.2f, 1f)).apply()
+
+    /** true = 从顶部向下覆盖；false = 从底部向上覆盖。 */
+    var regionFromTop: Boolean
+        get() = p.getBoolean("region_from_top", true)
+        set(v) = p.edit().putBoolean("region_from_top", v).apply()
 
     var translating: Boolean
         get() = p.getBoolean("translating", true)
