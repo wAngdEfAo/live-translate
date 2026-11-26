@@ -61,7 +61,9 @@ echo "sdk.dir=/path/to/Android/Sdk" > local.properties
 
 ## 许可
 
-未指定，使用前请联系仓库作者。
+本项目采用 [MIT License](LICENSE)，可自由使用、修改、分发与商用，保留版权声明即可。
+
+> 说明：APK 内打包的 Google ML Kit 组件受 Google 自身条款约束，不受本项目许可影响。
 
 ---
 
