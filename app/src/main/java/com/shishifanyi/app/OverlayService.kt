@@ -1,5 +1,6 @@
 package com.shishifanyi.app
 
+import android.annotation.SuppressLint
 import android.util.Log
 
 import android.accessibilityservice.AccessibilityServiceInfo
@@ -46,7 +47,8 @@ class OverlayService : Service() {
         private const val TAG = "Overlay"
         private const val MAX_HISTORY = 3
         private const val DEFAULT_BG = 0xFF10131A.toInt()
-        private const val DEBUG_OUTLINE = true
+        // 调试描边：只在排查对齐问题时临时改 true，发布包必须是 false
+        private const val DEBUG_OUTLINE = false
         private const val FONT_SCALE = 1.42f
         private const val CH_ID = "live_translate_overlay"
         private const val NOTI_ID = 1001
@@ -618,6 +620,9 @@ class OverlayService : Service() {
 
     private var lastRenderKey: String = ""
 
+    // Layout.BREAK_STRATEGY_SIMPLE 与 LineBreaker.BREAK_STRATEGY_SIMPLE 都是 0，
+// 用 Layout 的常量无需 API 29 的类，lint 的 WrongConstant 在这里是误判
+    @SuppressLint("WrongConstant")
     private fun renderBlocks(raw: List<Pair<TextBlock, String>>) {
         val layer = blockLayer ?: return
         val key = raw.joinToString("\u0001") { it.first.text + "\u0002" + it.second }

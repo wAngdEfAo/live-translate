@@ -22,7 +22,7 @@ Android 屏幕实时翻译：把屏幕上显示的英文**就地**换成中文�
 ### 可选：一条命令开启无障碍
 
 ```bash
-adb shell pm grant com.yg.livetranslate android.permission.WRITE_SECURE_SETTINGS
+adb shell pm grant com.shishifanyi.app android.permission.WRITE_SECURE_SETTINGS
 ```
 
 授权后可在 App 内一键开关无障碍，且不会影响其他无障碍服务。

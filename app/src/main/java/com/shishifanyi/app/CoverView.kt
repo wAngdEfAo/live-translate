@@ -1,5 +1,6 @@
 package com.shishifanyi.app
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
@@ -10,6 +11,8 @@ import android.widget.TextView
  * 多次涂色是为了防止任何一层半透明（drawable alpha / 窗口合成）
  * 让底下的英文透出来。
  */
+// 项目没有引入 appcompat，用原生 TextView 是刻意的，换 AppCompatTextView 会平白多一个依赖
+@SuppressLint("AppCompatCustomView")
 class CoverView(context: Context) : TextView(context) {
 
     var coverColor: Int = 0xFF10131A.toInt()

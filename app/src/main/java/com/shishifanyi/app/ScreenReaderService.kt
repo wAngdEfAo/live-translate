@@ -95,26 +95,38 @@ class ScreenReaderService : AccessibilityService() {
     }
 
     private fun collect(node: AccessibilityNodeInfo?, depth: Int) {
-        if (node == null || depth > 40) return
-        nodeBudget++
-        if (nodeBudget > 800) return
+        if (node == null) return
+        try {
+            if (depth > 40) return
+            nodeBudget++
+            if (nodeBudget > 800) return
 
-        // 密码 / 验证码输入框：整棵子树都不读，内容不该被翻译，更不该进翻译引擎
-        if (node.isPassword) return
+            // 密码 / 验证码输入框：整棵子树都不读，内容不该被翻译，更不该进翻译引擎
+            if (node.isPassword) return
 
-        // 只取可见文字；contentDescription 是读屏描述（图标名、按钮说明），
-        // 屏幕上并不显示，翻它会凭空盖住图标
-        val t = node.text?.toString()?.trim()
-        if (!t.isNullOrEmpty()) addBlock(node, t)
+            // 只取可见文字；contentDescription 是读屏描述（图标名、按钮说明），
+            // 屏幕上并不显示，翻它会凭空盖住图标
+            val t = node.text?.toString()?.trim()
+            if (!t.isNullOrEmpty()) addBlock(node, t)
 
-        val n = node.childCount
-        for (i in 0 until n) {
-            val child = try {
-                node.getChild(i)
-            } catch (t2: Throwable) {
-                null
-            } ?: continue
-            collect(child, depth + 1)
+            val n = node.childCount
+            for (i in 0 until n) {
+                val child = try {
+                    node.getChild(i)
+                } catch (t2: Throwable) {
+                    null
+                } ?: continue
+                collect(child, depth + 1)
+            }
+        } finally {
+            // API 33 起节点由系统自动回收；更早的版本必须手动回收，否则每抓一屏都留一批引用
+            if (android.os.Build.VERSION.SDK_INT < 33) {
+                try {
+                    node.recycle()
+                } catch (t: Throwable) {
+                    // 已经回收过或已被系统处理，忽略
+                }
+            }
         }
     }
 

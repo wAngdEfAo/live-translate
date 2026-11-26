@@ -33,6 +33,10 @@ class MainActivity : Activity() {
         private const val REQ_OCR = 1001
         private const val REQ_EXPORT = 1002
         private const val REQ_IMPORT = 1003
+
+        // 导入 zip 的上限：条目数或解压体积任意一项超限就停止，避免把内部存储写满
+        private const val MAX_ENTRY_COUNT = 200
+        private const val MAX_TOTAL_BYTES = 256L * 1024 * 1024
     }
 
     private var accState: TextView? = null
@@ -173,7 +177,6 @@ class MainActivity : Activity() {
         "ru" to "俄语", "pt" to "葡萄牙语", "it" to "意大利语",
         "th" to "泰语", "vi" to "越南语", "ar" to "阿拉伯语"
     )
-    private var storageDirs: TextView? = null
 
     /** 语言包：既能在线下载，也能直接导入 zip。 */
     private fun languageCard(): Pair<LinearLayout, TextView> {
@@ -402,13 +405,6 @@ class MainActivity : Activity() {
         tip.setPadding(0, dp(8f), 0, 0)
         card.addView(tip)
 
-        // 目录清单：storageDirs 之前只声明不赋值，导致这里永远是空的
-        val dirs = text("", 11f, R.color.fg_dim, false)
-        dirs.setPadding(0, dp(10f), 0, 0)
-        dirs.setTextIsSelectable(true)
-        card.addView(dirs)
-        storageDirs = dirs
-
         return card
     }
 
@@ -472,15 +468,22 @@ class MainActivity : Activity() {
         toast("正在导入…")
         Thread {
             var count = 0
+            var truncated = false
             try {
                 contentResolver.openInputStream(uri)?.use { raw ->
                     ZipInputStream(BufferedInputStream(raw)).use { zis ->
+                        var written = 0L
                         var e = zis.nextEntry
                         while (e != null) {
+                            if (count >= MAX_ENTRY_COUNT || written >= MAX_TOTAL_BYTES) {
+                                truncated = true
+                                break
+                            }
                             val target = resolveTarget(e.name)
                             if (target != null && !e.isDirectory) {
                                 target.parentFile?.mkdirs()
                                 FileOutputStream(target).use { zis.copyTo(it) }
+                                written += target.length()
                                 count++
                             }
                             zis.closeEntry()
@@ -491,6 +494,8 @@ class MainActivity : Activity() {
                 // 写入完成后，为每个模型目录补写 ML Kit 登记
                 var registered = 0
                 for (dirName in ModelRegistry.localModelDirs(this)) {
+                    // 结构不全的目录不登记：登记了 ML Kit 会认，但翻译时才失败，更难排查
+                    if (!ModelRegistry.looksComplete(File(modelRoot(), dirName))) continue
                     val langs = ModelRegistry.langsOf(dirName)
                     if (langs != null) {
                         val pair = langs.first + "_" + langs.second
@@ -500,7 +505,7 @@ class MainActivity : Activity() {
                 }
 
                 runOnUiThread {
-                    storageDirs?.postDelayed({ refreshStorage() }, 300L)
+                    storageSize?.postDelayed({ refreshStorage() }, 300L)
                     packState?.text = "校验中"
                     packState?.setTextColor(color(R.color.accent))
                     LanguagePack.verify(Prefs.srcLang, Prefs.tgtLang) { ok ->
@@ -509,6 +514,7 @@ class MainActivity : Activity() {
                             packState?.setTextColor(color(if (ok) R.color.ok else R.color.warn))
                             toast(
                                 when {
+                                    truncated -> "导入已中断：文件数或体积超出上限（已写入 $count 个）"
                                     ok -> "导入成功，共 $count 个文件"
                                     registered > 0 -> "已写入并登记 $count 个文件，若仍不可用请重启 App"
                                     else -> "写入了 $count 个文件，但缺少模型登记"
@@ -578,32 +584,19 @@ class MainActivity : Activity() {
             }
             val files = dirSize(filesDir)
             val nob = dirSize(noBackupFilesDir)
-            val listing = dirListing(filesDir, "files") + "\n" +
-                dirListing(noBackupFilesDir, "nobackup（模型）") + "\n" +
-                dirListing(cacheDir, "cache")
+            // 只说人话：占地方的就是安装包和离线模型，其余没内容就不提
             runOnUiThread {
-                t.text = "APK " + mb(apk) +
-                    "\n数据 " + mb(files) +
-                    " · 私有 " + mb(nob) +
-                    " · 缓存 " + mb(cache)
-                storageDirs?.text = listing
+                val parts = ArrayList<String>(4)
+                parts.add("安装包 " + mb(apk))
+                parts.add("离线模型 " + mb(nob))
+                if (files > 0) parts.add("应用数据 " + mb(files))
+                if (cache > 0) parts.add("缓存 " + mb(cache))
+                t.text = parts.joinToString(" · ")
             }
         }.start()
     }
 
-    /** 只列真正占空间的条目：空文件、以及缓存里那些随机数字命名的一次性临时目录，对用户没有意义。 */
-    private fun dirListing(dir: java.io.File, label: String): String {
-        val kids = dir?.listFiles()
-        if (kids == null || kids.isEmpty()) return label + "：空"
-        val rows = kids
-            .map { it.name to dirSize(it) }
-            .filter { (name, size) -> size >= 1024L && name.any { c -> !c.isDigit() } }
-            .sortedByDescending { it.second }
-            .take(4)
-        if (rows.isEmpty()) return label + "：无内容"
-        return label + "：\n" + rows.joinToString("\n") { "  " + it.first + "  " + mb(it.second) }
-    }
-
+    /** 存储占用只需一句总量，目录明细对用户没有意义，已移除。 */
     private fun dirSize(dir: java.io.File): Long {
         if (!dir.exists()) return 0L
         if (dir.isFile) return dir.length()
