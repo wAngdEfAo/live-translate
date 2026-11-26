@@ -65,4 +65,4 @@ echo "sdk.dir=/path/to/Android/Sdk" > local.properties
 
 ---
 
-此仓库由 dsh-go 发布。
+本软件的代码编写与发布均由 AI 完成。
