@@ -44,4 +44,30 @@ object LanguageDetector {
         val base = code.substringBefore('-').lowercase()
         return if (SUPPORTED.contains(base)) base else "en"
     }
+
+    /**
+     * 严格版检测：识别不出 / 失败时回调 null，而不是兜底成 "en"。
+     * 用于「屏幕是不是本来就用英文」这类判断——兜底成 en 会让西语屏幕被误跳过。
+     */
+    fun detectStrict(text: String, cb: (String?) -> Unit) {
+        val t = text.trim()
+        if (t.isEmpty()) {
+            cb(null)
+            return
+        }
+        try {
+            client.identifyLanguage(t.take(400))
+                .addOnSuccessListener { code ->
+                    if (code.isNullOrBlank() || code == "und") {
+                        cb(null)
+                    } else {
+                        val base = code.substringBefore('-').lowercase()
+                        cb(if (SUPPORTED.contains(base)) base else null)
+                    }
+                }
+                .addOnFailureListener { cb(null) }
+        } catch (e: Throwable) {
+            cb(null)
+        }
+    }
 }

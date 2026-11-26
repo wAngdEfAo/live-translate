@@ -203,15 +203,48 @@ object AppCore {
             }
 
             val t0 = android.os.SystemClock.elapsedRealtime()
+            val tgt = Prefs.tgtLang
+            // 源语言就是目标语言：没有可翻的内容。
+            // 这种情况以前会把原文当译文画上去（看起来"翻了但没变"），必须直接清屏跳过。
+            if (src == tgt) {
+                Log.d(TAG, "源语言与目标相同（$src），跳过并清屏")
+                main.post {
+                    if (gen == myGen) OverlayService.showBlocks(emptyList())
+                }
+                return@execute
+            }
             // 整屏总预算 8 秒：30 块 × 4 秒会拖到两分钟，用户会以为卡死
             val deadline = t0 + 8000L
             var failed = 0
             val pairs = ArrayList<Pair<TextBlock, String>>(blocks.size)
+
+            // 目标是英语、源语言是手动选的别的语言时，屏幕可能本来就是英文。
+            // 这种情况下「西班牙语→英语」会把英文原样吐回来，等于白画一层块。
+            // 先做一次整屏语言判定，已经是英文就跳过。
+            if (tgt == Languages.TARGET_EN && src != Languages.TARGET_EN) {
+                val joined = blocks.joinToString(" ") { it.text }.take(400)
+                val latchT = CountDownLatch(1)
+                var screenLang: String? = null
+                // 用严格版：识别不出时返回 null，不会兜底成 en，避免误跳过西语屏幕
+                LanguageDetector.detectStrict(joined) { lang ->
+                    screenLang = lang
+                    latchT.countDown()
+                }
+                latchT.await(2, TimeUnit.SECONDS)
+                if (screenLang == Languages.TARGET_EN) {
+                    Log.d(TAG, "屏幕内容已是英文，跳过翻译")
+                    main.post {
+                        if (gen == myGen) OverlayService.showBlocks(emptyList())
+                    }
+                    return@execute
+                }
+            }
+
             for (b in blocks) {
                 if (gen != myGen) break
                 if (android.os.SystemClock.elapsedRealtime() > deadline) break
                 // 命中缓存的不再调用模型
-                val hit = Translator.peek(src, b.text)
+                val hit = Translator.peek(src, tgt, b.text)
                 if (hit != null && hit.isNotBlank()) {
                     pairs.add(Pair(b, hit))
                     continue
@@ -219,7 +252,7 @@ object AppCore {
                 var zh = ""
                 var ok = false
                 val latch = CountDownLatch(1)
-                Translator.translateWith(src, b.text) { err, t ->
+                Translator.translateWith(src, tgt, b.text) { err, t ->
                     if (err == null && t.isNotBlank()) {
                         zh = t
                         ok = true

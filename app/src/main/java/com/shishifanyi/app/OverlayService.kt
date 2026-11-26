@@ -914,7 +914,8 @@ class OverlayService : Service() {
         val text = when {
             !acc -> "点此重新开启无障碍取词"
             !Prefs.translating -> "点此回到设置"
-            else -> "屏幕上 60% 区域显示中文"
+            else -> "屏幕上 60% 区域显示" +
+                (if (Prefs.tgtLang == Languages.TARGET_EN) "英文" else "中文")
         }
 
         return builder

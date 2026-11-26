@@ -70,7 +70,7 @@ class MainActivity : Activity() {
         scroll.addView(root)
 
         root.addView(text("实时翻译", 26f, R.color.fg, true))
-        root.addView(text("屏幕上的英文，浮窗里变成中文", 13f, R.color.fg_dim, false).apply {
+        root.addView(text("屏幕上的外文，就地变成中文或英文", 13f, R.color.fg_dim, false).apply {
             setPadding(0, dp(6f), 0, dp(20f))
         })
 
@@ -171,12 +171,12 @@ class MainActivity : Activity() {
     private var expandBtn: TextView? = null
     private var currentLangLabel: TextView? = null
 
-    private val LANGS = listOf(
-        "auto" to "自动检测", "en" to "英语", "ja" to "日语", "ko" to "韩语",
-        "fr" to "法语", "de" to "德语", "es" to "西班牙语",
-        "ru" to "俄语", "pt" to "葡萄牙语", "it" to "意大利语",
-        "th" to "泰语", "vi" to "越南语", "ar" to "阿拉伯语"
-    )
+    /** 目标语言的显示名。 */
+    private fun targetName(code: String) =
+        if (code == Languages.TARGET_EN) "英文" else "中文"
+
+    /** 目标语言选择按钮。 */
+    private val tgtChips = LinkedHashMap<String, TextView>()
 
     /** 语言包：既能在线下载，也能直接导入 zip。 */
     private fun languageCard(): Pair<LinearLayout, TextView> {
@@ -203,11 +203,39 @@ class MainActivity : Activity() {
         head.addView(st)
 
         val d = text(
-            "英译中模型约 30MB。可在线下载，也可以直接导入之前导出的 zip。",
+            "单语言模型约 35MB；非英语语言翻中文要经英语中转，需下两个模型（约 70MB）。",
             12f, R.color.fg_dim, false
         )
-        d.setPadding(0, dp(6f), 0, dp(12f))
+        d.setPadding(0, dp(6f), 0, dp(10f))
         card.addView(d)
+
+        // 目标语言：中文 / 英文
+        val tgtRow = LinearLayout(this)
+        tgtRow.orientation = LinearLayout.HORIZONTAL
+        tgtRow.gravity = Gravity.CENTER_VERTICAL
+        tgtRow.setPadding(0, 0, 0, dp(10f))
+        card.addView(tgtRow)
+        tgtRow.addView(text("翻译成：", 12f, R.color.fg_dim, false))
+        tgtChips.clear()
+        for ((code, label) in listOf(
+            Languages.TARGET_ZH to "中文",
+            Languages.TARGET_EN to "英文"
+        )) {
+            val chip = TextView(this)
+            chip.text = label
+            chip.textSize = 12.5f
+            chip.gravity = Gravity.CENTER
+            chip.setPadding(dp(16f), dp(6f), dp(16f), dp(6f))
+            chip.isClickable = true
+            chip.setOnClickListener { switchTarget(code) }
+            val clp = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+            clp.rightMargin = dp(8f)
+            tgtRow.addView(chip, clp)
+            tgtChips[code] = chip
+        }
 
         val curRow = LinearLayout(this)
         curRow.orientation = LinearLayout.HORIZONTAL
@@ -240,6 +268,8 @@ class MainActivity : Activity() {
             val show = langBox!!.visibility != View.VISIBLE
             langBox!!.visibility = if (show) View.VISIBLE else View.GONE
             expandBtn?.text = if (show) "收起 ▴" else "展开 ▾"
+            // 展开时才去查每个语言的状态
+            if (show) refreshLangRows()
         }
 
         val row = LinearLayout(this)
@@ -276,24 +306,25 @@ class MainActivity : Activity() {
 
     private fun buildLangRows(box: LinearLayout) {
         langRows.clear()
-        for ((code, name) in LANGS) {
+        box.removeAllViews()
+        val tgt = Prefs.tgtLang
+        // 自动检测排第一，其余按 Languages 里的顺序（常用在前）
+        val entries = ArrayList<Pair<String, String>>(Languages.ALL.size)
+        entries.add("auto" to "自动检测")
+        for (l in Languages.sourcesFor(tgt)) entries.add(l.code to l.name)
+
+        for ((code, name) in entries) {
             val row = LinearLayout(this)
             row.orientation = LinearLayout.HORIZONTAL
             row.gravity = Gravity.CENTER_VERTICAL
             row.setPadding(0, dp(5f), 0, dp(5f))
 
             val title = TextView(this)
-            title.text = if (code == "auto") "自动检测 → 中文" else name + " → 中文"
+            title.text = name + " → " + targetName(tgt)
             title.textSize = 13f
             title.isClickable = true
             title.setPadding(dp(6f), dp(4f), dp(6f), dp(4f))
-            title.setOnClickListener {
-                Prefs.srcLang = code
-                AppCore.resetDedupe()
-                refreshLangRows()
-                refresh()
-                toast("已切换源语言：" + name)
-            }
+            title.setOnClickListener { pickSource(code, name) }
             row.addView(title, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
 
             val state = TextView(this)
@@ -319,41 +350,93 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun toggleLang(code: String, name: String, action: TextView) {
-        LanguagePack.isDownloaded(code) { downloaded ->
+    /** 点语言名 = 切到它（模型没下就先提示下载）。 */
+    private fun pickSource(code: String, name: String) {
+        val tgt = Prefs.tgtLang
+        if (code == "auto") {
+            Prefs.srcLang = "auto"
+            LanguagePack.clearReady()
+            AppCore.resetDedupe()
+            refreshLangRows()
+            refresh()
+            showAutoHint(tgt)
+            return
+        }
+        LanguagePack.isReady(code, tgt) { ready ->
             runOnUiThread {
-                if (downloaded) {
-                    LanguagePack.delete(code) { ok ->
+                if (!ready) {
+                    toast(name + " → " + targetName(tgt) + " 的模型还没下载，先点右侧「下载」")
+                    return@runOnUiThread
+                }
+                Prefs.srcLang = code
+                LanguagePack.clearReady()
+                AppCore.resetDedupe()
+                refreshLangRows()
+                refresh()
+                toast("已切换：" + name + " → " + targetName(tgt))
+            }
+        }
+    }
+
+    /** 选了「自动检测」时提示一次：中转与测试阶段的说明。 */
+    private fun showAutoHint(tgt: String) {
+        toast(
+            "部分语言需经 ML Kit 中转，翻译速度可能受影响，影响程度随 ML Kit 的中转次数增加。" +
+                "自动检测目前还在测试阶段，可能出现翻译时间长、翻译不准确等问题。"
+        )
+    }
+
+    /** 切换目标语言；源语言若与新目标撞车，自动换成另一个。 */
+    private fun switchTarget(code: String) {
+        if (Prefs.tgtLang == code) return
+        Prefs.tgtLang = code
+        LanguagePack.clearReady()
+        AppCore.resetDedupe()
+        if (Prefs.srcLang == code) {
+            Prefs.srcLang =
+                if (code == Languages.TARGET_EN) Languages.TARGET_ZH else Languages.TARGET_EN
+        }
+        val box = langBox
+        if (box != null) buildLangRows(box)
+        refreshLangRows()
+        refresh()
+        toast("翻译目标已切换到" + targetName(code))
+    }
+
+    /** 右侧按钮：已就绪 → 删除；未就绪 → 下载（下完自动切过去）。 */
+    private fun toggleLang(code: String, name: String, action: TextView) {
+        val tgt = Prefs.tgtLang
+        LanguagePack.isReady(code, tgt) { ready ->
+            runOnUiThread {
+                if (ready) {
+                    LanguagePack.deleteSource(code) { ok ->
                         runOnUiThread {
-                            toast(if (ok) "已删除 $name 语言包" else "删除失败")
+                            toast(if (ok) "已删除 $name 模型" else "删除失败（英语模型不可删）")
                             refreshLangRows()
                             refresh()
                         }
                     }
-                } else if (code == "auto") {
-                    // 自动检测不需要下载模型，直接切
-                    Prefs.srcLang = code
-                    LanguagePack.ready = false
-                    AppCore.resetDedupe()
-                    refreshLangRows()
-                    refresh()
-                } else {
-                    packState?.text = "下载中"
-                    packState?.setTextColor(color(R.color.accent))
-                    LanguagePack.download(code, Prefs.tgtLang) { ok, msg ->
-                        runOnUiThread {
-                            packState?.text = msg
-                            packState?.setTextColor(color(if (ok) R.color.ok else R.color.warn))
-                            // 只有下载成功才切源语言；失败就留在原语言，
-                            // 否则每块翻译都要等 2 秒超时，整屏等于瘫掉
-                            if (ok) {
-                                Prefs.srcLang = code
-                                LanguagePack.ready = false
-                                AppCore.resetDedupe()
-                            }
-                            refreshLangRows()
-                            refresh()
+                    return@runOnUiThread
+                }
+                packState?.text = "下载中"
+                packState?.setTextColor(color(R.color.accent))
+                val need = LanguagePack.neededModels(code, tgt).size
+                toast(
+                    if (need > 1) "需要下载 $need 个模型（约 ${need * 35}MB）"
+                    else "开始下载模型（约 35MB）"
+                )
+                LanguagePack.download(code, tgt) { ok, msg ->
+                    runOnUiThread {
+                        packState?.text = msg
+                        packState?.setTextColor(color(if (ok) R.color.ok else R.color.warn))
+                        // 只有下载成功才切源语言；失败就留在原语言
+                        if (ok) {
+                            Prefs.srcLang = code
+                            LanguagePack.clearReady()
+                            AppCore.resetDedupe()
                         }
+                        refreshLangRows()
+                        refresh()
                     }
                 }
             }
@@ -362,10 +445,22 @@ class MainActivity : Activity() {
 
     private fun refreshLangRows() {
         val cur = Prefs.srcLang
-        val curName = LANGS.firstOrNull { it.first == cur }?.second ?: "英语"
-        currentLangLabel?.text = "当前：" + curName + " → 中文"
+        val tgt = Prefs.tgtLang
+        val curName = if (cur == "auto") "自动检测" else Languages.name(cur)
+        currentLangLabel?.text = "当前：$curName → " + targetName(tgt)
 
-        for ((code, name) in LANGS) {
+        // 目标语言按钮高亮
+        for ((code, chip) in tgtChips) {
+            val on = code == tgt
+            chip.setTextColor(color(if (on) R.color.bg else R.color.fg_dim))
+            chip.background =
+                if (on) rounded(R.color.accent, 10f) else rounded2(0x1AFFFFFF, 10f)
+        }
+
+        // 列表收起时不去查 58 个模型的状态，省掉上百次查询；展开时再刷新
+        if (langBox?.visibility != View.VISIBLE) return
+
+        for ((code, name) in langRows.keys.map { it to Languages.name(it) }) {
             val pair = langRows[code] ?: continue
             val state = pair.first
             val action = pair.second
@@ -373,9 +468,9 @@ class MainActivity : Activity() {
             state.text = if (isCur) "使用中 " else ""
             state.setTextColor(color(if (isCur) R.color.accent else R.color.fg_dim))
             if (code == "auto") continue
-            LanguagePack.isDownloaded(code) { downloaded ->
+            LanguagePack.isReady(code, tgt) { ready ->
                 runOnUiThread {
-                    if (downloaded) {
+                    if (ready) {
                         action.text = "删除"
                         action.setTextColor(color(R.color.warn))
                         action.background = rounded2(0x1AFFFFFF, 8f)
@@ -968,17 +1063,23 @@ class MainActivity : Activity() {
         ovState?.setTextColor(color(if (ovOn) R.color.ok else R.color.warn))
 
         val src = Prefs.srcLang
-        if (LanguagePack.ready) {
+        val tgt = Prefs.tgtLang
+        if (src == "auto") {
+            // 自动检测没有固定模型，要等检测出具体语言才知道下什么
+            packState?.text = "自动检测"
+            packState?.setTextColor(color(R.color.accent))
+            return finishRefresh()
+        }
+        if (LanguagePack.isReadyCached(src, tgt)) {
             packState?.text = "已就绪"
             packState?.setTextColor(color(R.color.ok))
             return finishRefresh()
         }
-        // 如实问 ML Kit：能翻就是就绪，不再凭文件存在猜
-        LanguagePack.isDownloaded(src) { downloaded ->
+        // 如实问 ML Kit：这条路径的模型齐了才算就绪
+        LanguagePack.isReady(src, tgt) { downloaded ->
             runOnUiThread {
                 when {
                     downloaded -> {
-                        LanguagePack.ready = true
                         packState?.text = "已就绪"
                         packState?.setTextColor(color(R.color.ok))
                     }
@@ -1105,12 +1206,21 @@ class MainActivity : Activity() {
 
     private fun downloadPack() {
         if (LanguagePack.busy) return
+        val src = Prefs.srcLang
+        val tgt = Prefs.tgtLang
+        if (src == "auto") {
+            toast("「自动检测」不需要下载，请在列表里选一个具体语言")
+            return
+        }
+        val need = LanguagePack.neededModels(src, tgt).size
         packState?.text = "下载中"
         packState?.setTextColor(color(R.color.accent))
-        LanguagePack.download(Prefs.srcLang, Prefs.tgtLang) { ok, msg ->
+        if (need > 1) toast("需要下载 $need 个模型（约 ${need * 35}MB，含英语中转）")
+        LanguagePack.download(src, tgt) { ok, msg ->
             runOnUiThread {
                 packState?.text = msg
                 packState?.setTextColor(color(if (ok) R.color.ok else R.color.warn))
+                refreshLangRows()
             }
         }
     }
