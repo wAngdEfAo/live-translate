@@ -575,7 +575,9 @@ class MainActivity : Activity() {
             }
             val files = dirSize(filesDir)
             val nob = dirSize(noBackupFilesDir)
-            val listing = dirListing(filesDir, "files") + "\n" + dirListing(cacheDir, "cache")
+            val listing = dirListing(filesDir, "files") + "\n" +
+                dirListing(noBackupFilesDir, "nobackup（模型）") + "\n" +
+                dirListing(cacheDir, "cache")
             runOnUiThread {
                 t.text = "APK " + mb(apk) +
                     "\n数据 " + mb(files) +
@@ -586,13 +588,17 @@ class MainActivity : Activity() {
         }.start()
     }
 
+    /** 只列真正占空间的条目：空文件、以及缓存里那些随机数字命名的一次性临时目录，对用户没有意义。 */
     private fun dirListing(dir: java.io.File, label: String): String {
         val kids = dir?.listFiles()
-        if (kids == null || kids.isEmpty()) return label + ": （空）"
-        val rows = kids.map { it.name to dirSize(it) }
+        if (kids == null || kids.isEmpty()) return label + "：空"
+        val rows = kids
+            .map { it.name to dirSize(it) }
+            .filter { (name, size) -> size >= 1024L && name.any { c -> !c.isDigit() } }
             .sortedByDescending { it.second }
-            .take(5)
-        return label + ":\n" + rows.joinToString("\n") { "  " + it.first + "  " + mb(it.second) }
+            .take(4)
+        if (rows.isEmpty()) return label + "：无内容"
+        return label + "：\n" + rows.joinToString("\n") { "  " + it.first + "  " + mb(it.second) }
     }
 
     private fun dirSize(dir: java.io.File): Long {
@@ -604,7 +610,12 @@ class MainActivity : Activity() {
         return total
     }
 
-    private fun mb(bytes: Long): String = String.format("%.1fMB", bytes / 1048576.0)
+    /** 小到不足 0.1MB 的东西也要看得出大小，不能一律显示 0.0MB。 */
+    private fun mb(bytes: Long): String = when {
+        bytes >= 1048576L -> String.format(java.util.Locale.US, "%.1fMB", bytes / 1048576.0)
+        bytes >= 1024L -> (bytes / 1024L).toString() + "KB"
+        else -> bytes.toString() + "B"
+    }
 
     /** 一条 pm grant 授权后，App 自己开关无障碍，不需要在终端写脚本。 */
     private fun adbCard(): LinearLayout {
