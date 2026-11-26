@@ -21,8 +21,8 @@ android {
         applicationId = "com.shishifanyi.app"
         minSdk = 24
         targetSdk = 36
-        versionCode = 42
-        versionName = "4.9"
+        versionCode = 43
+        versionName = "4.9.1"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")
@@ -79,6 +79,9 @@ android {
             "META-INF/LGPL2.1"
         )
         jniLibs {
+            // 保持 true：直接发 APK 时下载体积优先。
+            // 实测 false 会让 APK 从 24.7MB 涨到 48.4MB（so 不再压缩），
+            // 换来安装后占用更小、启动更快——走 App Bundle 分发时才值得切换。
             useLegacyPackaging = true
         }
     }

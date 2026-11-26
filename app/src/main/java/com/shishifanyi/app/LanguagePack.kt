@@ -2,6 +2,7 @@ package com.shishifanyi.app
 
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import com.google.mlkit.common.model.DownloadConditions
 import com.google.mlkit.common.model.RemoteModelManager
 import com.google.mlkit.nl.translate.TranslateRemoteModel
@@ -10,8 +11,22 @@ import com.google.mlkit.nl.translate.TranslatorOptions
 
 /** ML Kit 离线模型管理：按语言对下载 / 删除 / 校验。 */
 object LanguagePack {
+    private const val TAG = "LanguagePack"
 
-    private val clients = HashMap<String, com.google.mlkit.nl.translate.Translator>()
+    // 主线程（下载 / 删除）与 worker 线程（翻译）都会访问，必须用并发容器
+    private val clients =
+        java.util.concurrent.ConcurrentHashMap<String, com.google.mlkit.nl.translate.Translator>()
+
+    /** 正在进行的翻译批次数；大于 0 时不能 close，否则进行中的翻译会莫名失败。 */
+    private val active = java.util.concurrent.atomic.AtomicInteger(0)
+
+    fun beginUse() {
+        active.incrementAndGet()
+    }
+
+    fun endUse() {
+        active.decrementAndGet()
+    }
 
     private val handler = Handler(Looper.getMainLooper())
 
@@ -22,7 +37,8 @@ object LanguagePack {
         try {
             handler.removeCallbacks(idleClose)
             handler.postDelayed(idleClose, IDLE_MS)
-        } catch (t: Throwable) {
+        } catch (ex: Throwable) {
+            Log.w(TAG, "LanguagePack@26: " + ex.message)
         }
     }
 
@@ -30,12 +46,19 @@ object LanguagePack {
     fun releaseAll() {
         try {
             handler.removeCallbacks(idleClose)
-        } catch (t: Throwable) {
+        } catch (ex: Throwable) {
+            Log.w(TAG, "LanguagePack@34: " + ex.message)
+        }
+        // 还有批次在翻：等它结束再来一次，别把人家正用的 client close 掉
+        if (active.get() > 0) {
+            scheduleIdleClose()
+            return
         }
         for (c in clients.values) {
             try {
                 c.close()
-            } catch (t: Throwable) {
+            } catch (ex: Throwable) {
+                Log.w(TAG, "LanguagePack@39: " + ex.message)
             }
         }
         clients.clear()
@@ -54,17 +77,17 @@ object LanguagePack {
 
     fun clientFor(src: String, tgt: String): com.google.mlkit.nl.translate.Translator {
         val k = key(src, tgt)
-        var c = clients[k]
-        if (c == null) {
-            val opts = TranslatorOptions.Builder()
-                .setSourceLanguage(src)
-                .setTargetLanguage(tgt)
-                .build()
-            c = Translation.getClient(opts)
-            clients[k] = c
+        // computeIfAbsent 保证并发下只创建一个 client，不会出现两个线程各建一个
+        val c = clients.computeIfAbsent(k) {
+            Translation.getClient(
+                TranslatorOptions.Builder()
+                    .setSourceLanguage(src)
+                    .setTargetLanguage(tgt)
+                    .build()
+            )
         }
         scheduleIdleClose()
-        return c!!
+        return c
     }
 
     fun current(): com.google.mlkit.nl.translate.Translator =
@@ -119,7 +142,13 @@ object LanguagePack {
             val model = TranslateRemoteModel.Builder(src).build()
             RemoteModelManager.getInstance().deleteDownloadedModel(model)
                 .addOnSuccessListener {
-                    clients.remove(key(src, Prefs.tgtLang))
+                    // 摘掉并 close：只从 map 里移除会让原生模型一直挂着
+                    val gone = clients.remove(key(src, Prefs.tgtLang))
+                    try {
+                        gone?.close()
+                    } catch (ex: Throwable) {
+                        Log.w(TAG, "LanguagePack@146: " + ex.message)
+                    }
                     cb(true)
                 }
                 .addOnFailureListener { cb(false) }

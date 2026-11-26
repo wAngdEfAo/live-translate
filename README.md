@@ -55,6 +55,9 @@ keyPassword=你的密钥密码
 > arm64 Linux 主机若缺少可用 aapt2，可在 `gradle.properties` 中通过
 > `android.aapt2FromMavenOverride` 指向本地 aapt2 路径。
 
+> Windows 上项目路径不能含非 ASCII 字符：AGP 会直接拒绝构建
+> （`Your project path contains non-ASCII characters`）。请放在纯英文路径下。
+
 ## 实现要点
 
 | 模块 | 作用 |
@@ -78,6 +81,24 @@ keyPassword=你的密钥密码
 | 前台服务 | 保持悬浮层与截屏服务存活 | 悬浮窗开启期间 |
 | 通知 | 显示前台服务状态 | 常驻通知，可关闭 |
 
+### 关于 `WRITE_SECURE_SETTINGS`
+
+上面那条 `pm grant` 授权之后，App 才有能力自己改写系统的无障碍开关（「一键开关」就是这么实现的）。
+
+代价要说清楚：**这等于把设备上所有无障碍服务的控制权交给这个 App**——任何持有该权限的进程都能开启或关闭别人安装的无障碍服务。
+如果不需要一键开关，**不要执行这条命令**，照常用系统设置手动开启无障碍，功能完全一样。
+
+### 语言包导出 zip 里有什么
+
+导出会把 App 私有目录下的三类内容打成一个 zip：
+
+- `files/`——App 自己的配置与运行期文件
+- `nobackup/`——ML Kit 模型目录（`com.google.mlkit.translate.models/dict.*/`），换机免下载的关键
+- `cache/`——临时文件
+
+**不包含** `shared_prefs/`：ML Kit 的模型登记状态不打包，导入时由 App 按模型目录重新补写。
+也不包含任何屏幕内容、原文或译文。
+
 数据流向：
 
 - 翻译全程在**本地模型**完成，屏幕内容不出设备
@@ -92,6 +113,8 @@ keyPassword=你的密钥密码
 - 银行、支付类 App 常屏蔽无障碍节点，只能依赖 OCR
 - 覆盖不到状态栏 / 通知栏
 - 部分国产 ROM 会回收无障碍服务，需要手动重新开启
+- 覆盖层不会阻止系统熄屏（未加 `FLAG_KEEP_SCREEN_ON`，优先省电）
+- 密码 / 验证码输入框不会翻译（无障碍侧按 `isPassword` 跳过，OCR 侧跳过圆点/星号行）
 - 使用自签名证书发布，首次安装需允许「未知来源」
 
 ## 许可

@@ -99,6 +99,9 @@ class ScreenReaderService : AccessibilityService() {
         nodeBudget++
         if (nodeBudget > 800) return
 
+        // 密码 / 验证码输入框：整棵子树都不读，内容不该被翻译，更不该进翻译引擎
+        if (node.isPassword) return
+
         // 只取可见文字；contentDescription 是读屏描述（图标名、按钮说明），
         // 屏幕上并不显示，翻它会凭空盖住图标
         val t = node.text?.toString()?.trim()

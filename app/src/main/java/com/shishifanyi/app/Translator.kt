@@ -67,13 +67,23 @@ object Translator {
             return
         }
 
+        // 标记「有一次翻译在路上」：LanguagePack 回收模型前会看这个计数
+        LanguagePack.beginUse()
+        val finished = java.util.concurrent.atomic.AtomicBoolean(false)
+        fun done(err: String?, out: String) {
+            if (finished.compareAndSet(false, true)) {
+                LanguagePack.endUse()
+                cb(err, out)
+            }
+        }
+
         try {
             val client = LanguagePack.clientFor(lang, tgt)
             client.translate(text)
                 .addOnSuccessListener { zh ->
                     val out = zh ?: ""
                     if (out.isNotBlank()) remember(key, out)
-                    cb(null, out)
+                    done(null, out)
                 }
                 .addOnFailureListener { first ->
                     // 缺语言包时自动下一次，再重试一次
@@ -84,17 +94,17 @@ object Translator {
                                     .addOnSuccessListener { zh ->
                                         val out = zh ?: ""
                                         if (out.isNotBlank()) remember(key, out)
-                                        cb(null, out)
+                                        done(null, out)
                                     }
-                                    .addOnFailureListener { cb(it.message ?: "翻译失败", "") }
+                                    .addOnFailureListener { done(it.message ?: "翻译失败", "") }
                             }
-                            .addOnFailureListener { cb(first.message ?: "翻译失败", "") }
+                            .addOnFailureListener { done(first.message ?: "翻译失败", "") }
                     } catch (t: Throwable) {
-                        cb(first.message ?: "翻译失败", "")
+                        done(first.message ?: "翻译失败", "")
                     }
                 }
         } catch (t: Throwable) {
-            cb(t.message ?: "翻译失败", "")
+            done(t.message ?: "翻译失败", "")
         }
     }
 }

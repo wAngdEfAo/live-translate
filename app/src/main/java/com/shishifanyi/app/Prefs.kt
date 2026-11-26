@@ -46,18 +46,6 @@ object Prefs {
         get() = p.getBoolean("ocr", true)
         set(v) = p.edit().putBoolean("ocr", v).apply()
 
-    var resident: Boolean
-        get() = p.getBoolean("resident", true)
-        set(v) = p.edit().putBoolean("resident", v).apply()
-
-    var winX: Int
-        get() = p.getInt("win_x", -1)
-        set(v) = p.edit().putInt("win_x", v).apply()
-
-    var winY: Int
-        get() = p.getInt("win_y", -1)
-        set(v) = p.edit().putInt("win_y", v).apply()
-
     var barX: Int
         get() = p.getInt("bar_x", -1)
         set(v) = p.edit().putInt("bar_x", v).apply()
@@ -65,12 +53,4 @@ object Prefs {
     var barY: Int
         get() = p.getInt("bar_y", -1)
         set(v) = p.edit().putInt("bar_y", v).apply()
-
-    var winW: Int
-        get() = p.getInt("win_w", 0)
-        set(v) = p.edit().putInt("win_w", v).apply()
-
-    var winH: Int
-        get() = p.getInt("win_h", 0)
-        set(v) = p.edit().putInt("win_h", v).apply()
 }

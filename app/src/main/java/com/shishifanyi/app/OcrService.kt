@@ -60,7 +60,8 @@ class OcrService : Service() {
         fun stop(ctx: Context) {
             try {
                 ctx.stopService(Intent(ctx, OcrService::class.java))
-            } catch (_: Throwable) {
+            } catch (ex: Throwable) {
+                Log.w(TAG, "OcrService@63: " + ex.message)
             }
         }
 
@@ -150,11 +151,6 @@ class OcrService : Service() {
             if (Build.VERSION.SDK_INT >= 34) p.registerCallback(projectionCallback, main)
             projection = p
 
-            val dm = resources.displayMetrics
-            val w = dm.widthPixels
-            val h = dm.heightPixels
-            val dpi = dm.densityDpi
-
             Log.d(TAG, "投影就绪（按需开镜像）")
         } catch (t: Throwable) {
             Log.w(TAG, "OCR 采集初始化失败: " + t.message)
@@ -195,12 +191,14 @@ class OcrService : Service() {
     private fun releaseSurface() {
         try {
             virtualDisplay?.release()
-        } catch (_: Throwable) {
+        } catch (ex: Throwable) {
+            Log.w(TAG, "OcrService@193: " + ex.message)
         }
         virtualDisplay = null
         try {
             reader?.close()
-        } catch (_: Throwable) {
+        } catch (ex: Throwable) {
+            Log.w(TAG, "OcrService@198: " + ex.message)
         }
         reader = null
     }
@@ -233,7 +231,8 @@ class OcrService : Service() {
         val bmp = toBitmap(img)
         try {
             img.close()
-        } catch (_: Throwable) {
+        } catch (ex: Throwable) {
+            Log.w(TAG, "OcrService@231: " + ex.message)
         }
         if (bmp == null) {
             releaseSurface()
@@ -246,7 +245,8 @@ class OcrService : Service() {
             .addOnSuccessListener { result ->
                 try {
                     bmp.recycle()
-                } catch (_: Throwable) {
+                } catch (ex: Throwable) {
+                    Log.w(TAG, "OcrService@244: " + ex.message)
                 }
                 val out = ArrayList<TextBlock>()
                 for (tb in result.textBlocks) {
@@ -260,7 +260,8 @@ class OcrService : Service() {
             .addOnFailureListener { e ->
                 try {
                     bmp.recycle()
-                } catch (_: Throwable) {
+                } catch (ex: Throwable) {
+                    Log.w(TAG, "OcrService@258: " + ex.message)
                 }
                 Log.w(TAG, "OCR 失败: " + e.message)
                 cb(emptyList())
@@ -292,7 +293,8 @@ class OcrService : Service() {
         lastFrameAt = SystemClock.elapsedRealtime()
         try {
             if (old != null && old !== smallFrame && !old.isRecycled) old.recycle()
-        } catch (_: Throwable) {
+        } catch (ex: Throwable) {
+            Log.w(TAG, "OcrService@290: " + ex.message)
         }
     }
 
@@ -371,7 +373,8 @@ class OcrService : Service() {
         releaseSurface()
         try {
             projection?.stop()
-        } catch (_: Throwable) {
+        } catch (ex: Throwable) {
+            Log.w(TAG, "OcrService@369: " + ex.message)
         }
         projection = null
         running = false
@@ -386,7 +389,8 @@ class OcrService : Service() {
         smallFrame = null
         try {
             if (f != null && !f.isRecycled) f.recycle()
-        } catch (_: Throwable) {
+        } catch (ex: Throwable) {
+            Log.w(TAG, "OcrService@384: " + ex.message)
         }
         super.onDestroy()
     }

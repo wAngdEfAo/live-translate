@@ -21,6 +21,10 @@ object AppCore {
     @Volatile
     private var lastKey: String = ""
 
+    /** 每次取词批次自增；旧批次的翻译结果一律丢弃，避免盖住新屏幕。 */
+    @Volatile
+    private var gen: Int = 0
+
     @Volatile
     private var ocrBusy: Boolean = false
 
@@ -49,12 +53,15 @@ object AppCore {
     fun syncOcrService() {
         val ctx = app ?: return
         try {
-            if (Prefs.translating && Prefs.ocrFallback && OcrService.hasPermission()) {
+            if (Prefs.translating && Prefs.ocrFallback && OcrService.hasPermission() &&
+                OverlayService.isShowing()
+            ) {
                 OcrService.start(ctx)
             } else {
                 OcrService.stop(ctx)
             }
-        } catch (t: Throwable) {
+        } catch (ex: Throwable) {
+            Log.w(TAG, "AppCore@57: " + ex.message)
         }
     }
 
@@ -99,26 +106,25 @@ object AppCore {
             "取词 " + blocks.size + " 块，可用 " + filtered.size + "（" + stats.brief() + "）"
         )
 
-        if (filtered.size <= 2 && stats.samples.isNotEmpty()) {
-            Log.d(TAG, "丢弃样例 " + stats.samples.joinToString(" / "))
-        }
+        // 整屏基本是中文：本来就没有可翻内容，不该退避（否则切到英文页要等 5 秒），也不必走 OCR
+        val mostlyChinese = stats.chinese > 0 && stats.chinese * 2 >= stats.total
 
         if (filtered.isEmpty()) {
+            if (mostlyChinese) {
+                emptyStreak = 0
+                return
+            }
             emptyStreak++
             // 连续 3 次空白就退避：避免屏幕静止时反复抓取
             if (emptyStreak >= 3) {
                 backoffUntil = now + 5000L
                 Log.d(TAG, "连续无内容，暂停取词 5 秒")
             }
-        } else {
-            emptyStreak = 0
-        }
-
-        if (filtered.isEmpty()) {
             // 无障碍读不到字，才动 OCR
             if (useOcr()) captureOcr(maxY)
             return
         }
+        emptyStreak = 0
 
         // 性能优先：矩形看着正常就直接用，不必截图；
         // 精准模式：每次都走 OCR，坐标更准但更费电。
@@ -151,6 +157,7 @@ object AppCore {
         val key = blocks.joinToString("|") { it.text }
         if (key == lastKey) return
         lastKey = key
+        val myGen = ++gen
 
         worker.execute {
             // 自动检测：整屏文字先判语言，再逐块翻
@@ -168,10 +175,13 @@ object AppCore {
             }
 
             val t0 = android.os.SystemClock.elapsedRealtime()
+            // 整屏总预算 8 秒：30 块 × 4 秒会拖到两分钟，用户会以为卡死
+            val deadline = t0 + 8000L
             var failed = 0
-            var firstErr = ""
             val pairs = ArrayList<Pair<TextBlock, String>>(blocks.size)
             for (b in blocks) {
+                if (gen != myGen) return@execute
+                if (android.os.SystemClock.elapsedRealtime() > deadline) break
                 // 命中缓存的不再调用模型
                 val hit = Translator.peek(src, b.text)
                 if (hit != null && hit.isNotBlank()) {
@@ -188,21 +198,21 @@ object AppCore {
                     }
                     latch.countDown()
                 }
-                latch.await(4, TimeUnit.SECONDS)
+                latch.await(2, TimeUnit.SECONDS)
                 if (ok) {
                     pairs.add(Pair(b, zh))
                 } else {
                     failed++
-                    if (firstErr.isEmpty()) firstErr = b.text.take(24)
                 }
             }
             val cost = android.os.SystemClock.elapsedRealtime() - t0
             Log.d(
                 TAG,
                 "翻译 " + pairs.size + "/" + blocks.size + " 块，耗时 " + cost + "ms，语言 " + src +
-                    (if (failed > 0) "，失败 " + failed + " 块，样例「" + firstErr + "」" else "")
+                    (if (failed > 0) "，失败 " + failed + " 块" else "")
             )
             main.post {
+                if (gen != myGen) return@post
                 if (!Prefs.translating) return@post
                 if (pairs.isEmpty()) return@post
                 OverlayService.showBlocks(pairs)

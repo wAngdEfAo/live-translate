@@ -8,7 +8,6 @@ data class TextBlock(val text: String, val rect: Rect)
 /** 过滤时各类丢弃原因的计数，用于排查"为什么可用 0"。 */
 data class FilterStats(
     var total: Int = 0,
-    val samples: MutableList<String> = ArrayList(),
     var small: Int = 0,
     var short: Int = 0,
     var fewWords: Int = 0,
@@ -33,6 +32,9 @@ object TextPipeline {
     private val cjkRe = Regex("[\\u4e00-\\u9fff]")
     private val urlRe = Regex("(?i)(https?://|www\\.)|\\.(com|cn|net|org|io|dev|app)(/|$)")
     private val wsRe = Regex("\\s+")
+
+    /** 密码框在 OCR 结果里是一串圆点/星号，这种行不该被当成待翻译文本。 */
+    private val maskRe = Regex("^[\\u2022\\u00B7\\u25CF\\u2731\\uFF0A*\\u2219\\s]+$")
 
     private const val MAX_BLOCKS = 30
 
@@ -148,6 +150,11 @@ object TextPipeline {
             }
             if (line == prev) continue
 
+            if (maskRe.matches(line)) {
+                if (stats != null) stats.script++
+                continue
+            }
+
             val letters = line.count { it.isLetter() }
             if (letters < 2) {
                 if (stats != null) stats.lowLetters++
@@ -162,7 +169,6 @@ object TextPipeline {
                 if (stats != null) {
                     // 含中文的行不该算"脚本不符"，分开计数才是真实原因
                     if (cjkRe.findAll(line).count() > 0) stats.chinese++ else stats.script++
-                    if (stats.samples.size < 6) stats.samples.add("脚本:" + line.take(24))
                 }
                 continue
             }
@@ -173,7 +179,6 @@ object TextPipeline {
                 if (cjk > 0 && cjk * 2 >= letters) {
                     if (stats != null) {
                         stats.chinese++
-                        if (stats.samples.size < 6) stats.samples.add("中文:" + line.take(24))
                     }
                     continue
                 }

@@ -43,6 +43,7 @@ import kotlin.math.abs
 class OverlayService : Service() {
 
     companion object {
+        private const val TAG = "Overlay"
         private const val MAX_HISTORY = 3
         private const val DEFAULT_BG = 0xFF10131A.toInt()
         private const val DEBUG_OUTLINE = true
@@ -58,14 +59,16 @@ class OverlayService : Service() {
         fun start(ctx: Context) {
             try {
                 ctx.startService(Intent(ctx, OverlayService::class.java))
-            } catch (_: Throwable) {
+            } catch (ex: Throwable) {
+                Log.w(TAG, "OverlayService@62: " + ex.message)
             }
         }
 
         fun stop(ctx: Context) {
             try {
                 ctx.stopService(Intent(ctx, OverlayService::class.java))
-            } catch (_: Throwable) {
+            } catch (ex: Throwable) {
+                Log.w(TAG, "OverlayService@69: " + ex.message)
             }
         }
 
@@ -110,6 +113,18 @@ class OverlayService : Service() {
         }
     }
 
+    /** 块层窗口在屏幕上的 x 原点：分屏 / 折叠屏 / 横屏时不一定贴左边 0。 */
+    private fun liveLayerOffsetX(): Int {
+        val l = blockLayer ?: return 0
+        return try {
+            val loc = IntArray(2)
+            l.getLocationOnScreen(loc)
+            loc[0]
+        } catch (t: Throwable) {
+            0
+        }
+    }
+
     /** 只更新分界线位置与标签；块层固定覆盖全屏，靠坐标过滤区域。 */
     private fun updateRegion() {
         val (t, b) = AppCore.regionBounds()
@@ -122,7 +137,8 @@ class OverlayService : Service() {
             lp.y = (y - dp(6f) - liveLayerOffsetY()).coerceAtLeast(0)
             try {
                 wm.updateViewLayout(line, lp)
-            } catch (_: Throwable) {
+            } catch (ex: Throwable) {
+                Log.w(TAG, "OverlayService@126: " + ex.message)
             }
         }
         val pct = Math.round(Prefs.regionRatio * 100).toString()
@@ -148,6 +164,24 @@ class OverlayService : Service() {
         Prefs.init(this)
         AppCore.init(this)
         wm = getSystemService(WINDOW_SERVICE) as WindowManager
+        applyScreenMetrics()
+        // 初值必须来自用户设置的比例，不能写死 0.6（否则改过比例后重启覆盖层会错位）
+        val (t0, b0) = AppCore.regionBounds()
+        regionTop = t0
+        regionH = b0
+
+        startForegroundSafely()
+        addBlockLayer()
+        addBoundaryLine()
+        addBar()
+        inst = this
+        // 覆盖层起来了才需要 OCR；这里主动同步一次，避免上次残留状态
+        AppCore.syncOcrService()
+        main.postDelayed(watchdog, 30000L)
+    }
+
+    /** 重新读取当前屏幕尺寸；旋转、分屏、折叠屏切换后必须重算。 */
+    private fun applyScreenMetrics() {
         screenW = resources.displayMetrics.widthPixels
         screenH = resources.displayMetrics.heightPixels
         if (Build.VERSION.SDK_INT >= 30) {
@@ -157,17 +191,30 @@ class OverlayService : Service() {
                     screenW = b.width()
                     screenH = b.height()
                 }
-            } catch (_: Throwable) {
+            } catch (ex: Throwable) {
+                Log.w(TAG, "OverlayService@179: " + ex.message)
             }
         }
-        regionH = (screenH * 0.6f).toInt()
+    }
 
-        startForegroundSafely()
-        addBlockLayer()
-        addBoundaryLine()
-        addBar()
-        inst = this
-        main.postDelayed(watchdog, 30000L)
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        applyScreenMetrics()
+        updateRegion()
+        // 块层是按旧尺寸创建的，不跟着改就只在左上角一小块里画
+        val l = blockLayer
+        if (l != null) {
+            val lp = l.layoutParams as WindowManager.LayoutParams
+            lp.width = screenW
+            lp.height = screenH
+            try {
+                wm.updateViewLayout(l, lp)
+            } catch (ex: Throwable) {
+                Log.w(TAG, "OverlayService@196: " + ex.message)
+            }
+        }
+        lastRenderKey = ""
+        renderBlocks(lastBlocks)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -186,6 +233,8 @@ class OverlayService : Service() {
     }
 
     private fun addBlockLayer() {
+        // 刻意不加 FLAG_KEEP_SCREEN_ON：翻译是短时查看，熄屏交给系统更省电。
+        // 若以后要做「看字幕不熄屏」，给这个窗口的 flags 加上 FLAG_KEEP_SCREEN_ON 即可。
         val layer = FrameLayout(this)
         layer.isClickable = false
         val p = WindowManager.LayoutParams(
@@ -301,12 +350,14 @@ class OverlayService : Service() {
                         bp.y = regionH + dp(6f) - insetY
                         try {
                             wm.updateViewLayout(b, bp)
-                        } catch (_: Throwable) {
+                        } catch (ex: Throwable) {
+                            Log.w(TAG, "OverlayService@305: " + ex.message)
                         }
                     }
                     if (lastBlocks.isNotEmpty()) renderBlocks(lastBlocks)
                 }
-            } catch (_: Throwable) {
+            } catch (ex: Throwable) {
+                Log.w(TAG, "OverlayService@310: " + ex.message)
             }
         }
     }
@@ -401,7 +452,8 @@ class OverlayService : Service() {
                     p.y = hStartY + dy
                     try {
                         wm.updateViewLayout(row, p)
-                    } catch (_: Throwable) {
+                    } catch (ex: Throwable) {
+                        Log.w(TAG, "OverlayService@405: " + ex.message)
                     }
                     true
                 }
@@ -416,7 +468,8 @@ class OverlayService : Service() {
                         p.y = regionH + dp(6f) - insetY
                         try {
                             wm.updateViewLayout(row, p)
-                        } catch (_: Throwable) {
+                        } catch (ex: Throwable) {
+                            Log.w(TAG, "OverlayService@420: " + ex.message)
                         }
                         Log.d("Overlay", "控制条已复位")
                     } else {
@@ -450,7 +503,8 @@ class OverlayService : Service() {
                     p.y = startY + (e.rawY - downRawY).toInt()
                     try {
                         wm.updateViewLayout(row, p)
-                    } catch (_: Throwable) {
+                    } catch (ex: Throwable) {
+                        Log.w(TAG, "OverlayService@454: " + ex.message)
                     }
                     true
                 }
@@ -493,18 +547,17 @@ class OverlayService : Service() {
 
     // ---------- 覆盖渲染 ----------
 
-    /** 同一段落可能被父子节点重复上报，重叠超过 60% 的只留最大那块。 */
+    /** 同一段落可能被父子节点重复上报：矩形重叠超过 60% 的只留最大那块。
+     *  注意：同一句出现在页面上两个不同位置（标题 + 图标说明）时要都盖，
+     *  所以这里只按「位置重叠」去重，不再按文本去重。 */
     private fun dedupe(list: List<Pair<TextBlock, String>>): List<Pair<TextBlock, String>> {
         val sorted = list.sortedByDescending {
             it.first.rect.width().toLong() * it.first.rect.height().toLong()
         }
         val keptRects = ArrayList<android.graphics.Rect>()
-        val keptTexts = LinkedHashSet<String>()
         val out = ArrayList<Pair<TextBlock, String>>()
         for (p in sorted) {
             val r = p.first.rect
-            // 同一句只保留一块，避免名称同时出现在图标与标题上
-            if (!keptTexts.add(p.first.text)) continue
             val area = (r.width().toLong() * r.height().toLong()).coerceAtLeast(1L)
             var overlapped = 0L
             for (k in keptRects) {
@@ -536,7 +589,8 @@ class OverlayService : Service() {
 
     private fun fitSize(text: String, width: Int, targetH: Int): Float {
         if (width <= 0 || targetH <= 0 || text.isEmpty()) return 12f
-        val key = text.length.toString() + ":" + width + ":" + targetH
+        // key 必须含文本本身：只用「长度:宽:高」时，同长度同尺寸的不同句子会串号
+        val key = width.toString() + ":" + targetH + ":" + text
         val hit = fitCache[key]
         if (hit != null) return hit
 
@@ -575,9 +629,12 @@ class OverlayService : Service() {
 
         val list = dedupe(raw)
         if (list.isEmpty()) return
-        fitCache.clear()
+        // 按上边界排序，供「向下扩块」查找正下方最近的块
+        val ordered = list.sortedBy { it.first.rect.top }
+        // 缓存靠 200 条上限自然淘汰；以前每次渲染都 clear()，等于缓存从未生效
 
         val offY = liveLayerOffsetY()
+        val offX = liveLayerOffsetX()
         Log.d(
             "Overlay",
             "绘制 " + list.size + " 块，区域 " + regionTop + "-" + regionH + "，窗口偏移 " + offY
@@ -609,7 +666,7 @@ class OverlayService : Service() {
             val rawLeft = r.left
             val rawWidth = r.width()
 
-            var left = (rawLeft - pad).coerceAtLeast(0)
+            var left = (rawLeft - offX - pad).coerceAtLeast(0)
             var width = rawWidth + pad * 2
             if (width <= 8) continue
             if (left + width > screenW) width = screenW - left
@@ -634,8 +691,14 @@ class OverlayService : Service() {
             }
 
             // 还是装不下就向下扩块，宁可多盖一点，也不压扁字
+            // 但扩张不能盖住下一行：以正下方最近的同列文字块为上限
             if (h > height) {
-                val room = (layerBottom - top).coerceAtLeast(height)
+                val nextTop = ordered.firstOrNull {
+                    val nr = it.first.rect
+                    nr.top > r.bottom && nr.left < r.right && nr.right > r.left
+                }?.first?.rect?.top
+                val limit = if (nextTop != null) nextTop - offY else layerBottom
+                val room = (minOf(layerBottom, limit) - top).coerceAtLeast(height)
                 height = h.coerceAtMost(room)
             }
 
@@ -696,7 +759,8 @@ class OverlayService : Service() {
         val v = historyWin ?: return
         try {
             wm.removeView(v)
-        } catch (_: Throwable) {
+        } catch (ex: Throwable) {
+            Log.w(TAG, "OverlayService@701: " + ex.message)
         }
         historyWin = null
     }
@@ -854,7 +918,8 @@ class OverlayService : Service() {
         try {
             val nm = getSystemService(NotificationManager::class.java)
             nm.notify(NOTI_ID, buildNotification())
-        } catch (_: Throwable) {
+        } catch (ex: Throwable) {
+            Log.w(TAG, "OverlayService@859: " + ex.message)
         }
     }
 
@@ -868,11 +933,14 @@ class OverlayService : Service() {
     override fun onDestroy() {
         main.removeCallbacksAndMessages(null)
         if (inst === this) inst = null
+        // 覆盖层没了就不该继续截屏：所有退出路径（✕ 按钮、被系统回收、设置页关闭）都走这里
+        AppCore.syncOcrService()
         hideHistory()
         for (v in listOfNotNull(blockLayer, lineWin, bar)) {
             try {
                 wm.removeView(v)
-            } catch (_: Throwable) {
+            } catch (ex: Throwable) {
+                Log.w(TAG, "OverlayService@877: " + ex.message)
             }
         }
         blockLayer = null
@@ -880,7 +948,8 @@ class OverlayService : Service() {
         bar = null
         try {
             if (foregroundStarted) stopForeground(STOP_FOREGROUND_REMOVE)
-        } catch (_: Throwable) {
+        } catch (ex: Throwable) {
+            Log.w(TAG, "OverlayService@885: " + ex.message)
         }
         super.onDestroy()
     }

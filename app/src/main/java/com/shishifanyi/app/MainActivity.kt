@@ -18,6 +18,7 @@ import java.util.zip.ZipOutputStream
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
+import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.widget.LinearLayout
@@ -28,6 +29,7 @@ import android.widget.TextView
 class MainActivity : Activity() {
 
     companion object {
+        private const val TAG = "MainActivity"
         private const val REQ_OCR = 1001
         private const val REQ_EXPORT = 1002
         private const val REQ_IMPORT = 1003
@@ -144,7 +146,6 @@ class MainActivity : Activity() {
             Prefs.ocrFallback = on
             if (on) ensureOcrPermission() else AppCore.syncOcrService()
         })
-        card.addView(toggleRow("后台常驻（防止被系统回收）", Prefs.resident) { Prefs.resident = it })
         card.addView(toggleRow("精准模式（每次截图识别，更准但更费电）", Prefs.accurateMode) { Prefs.accurateMode = it })
 
         val note = text(
@@ -398,6 +399,13 @@ class MainActivity : Activity() {
         tip.setPadding(0, dp(8f), 0, 0)
         card.addView(tip)
 
+        // 目录清单：storageDirs 之前只声明不赋值，导致这里永远是空的
+        val dirs = text("", 11f, R.color.fg_dim, false)
+        dirs.setPadding(0, dp(10f), 0, 0)
+        dirs.setTextIsSelectable(true)
+        card.addView(dirs)
+        storageDirs = dirs
+
         return card
     }
 
@@ -574,24 +582,6 @@ class MainActivity : Activity() {
                     " · 私有 " + mb(nob) +
                     " · 缓存 " + mb(cache)
                 storageDirs?.text = listing
-            }
-        }.start()
-    }
-
-    private fun clearCaches() {
-        Thread {
-            try {
-                cacheDir.deleteRecursively()
-            } catch (t: Throwable) {
-            }
-            try {
-                externalCacheDir?.deleteRecursively()
-            } catch (t: Throwable) {
-            }
-            runOnUiThread {
-                refreshStorage()
-        refreshLangRows()
-                toast("缓存已清理（语言包若被清掉，下次翻译需重新下载）")
             }
         }.start()
     }
@@ -925,7 +915,8 @@ class MainActivity : Activity() {
         } catch (t: Throwable) {
             try {
                 startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION))
-            } catch (t2: Throwable) {
+            } catch (ex: Throwable) {
+                Log.w(TAG, "MainActivity@917: " + ex.message)
             }
         }
     }
@@ -951,13 +942,16 @@ class MainActivity : Activity() {
                 android.content.pm.PackageManager.PERMISSION_GRANTED
             ) return
             requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 2001)
-        } catch (t: Throwable) {
+        } catch (ex: Throwable) {
+            Log.w(TAG, "MainActivity@943: " + ex.message)
         }
     }
 
     private fun toggleOverlay() {
         if (OverlayService.isShowing()) {
             OverlayService.stop(this)
+            // 关覆盖层的同时把 OCR 一起停掉，否则会一直挂着录屏权限
+            AppCore.syncOcrService()
             showBtnRef?.postDelayed({ refresh() }, 200L)
             return
         }
@@ -977,7 +971,8 @@ class MainActivity : Activity() {
         try {
             val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             startActivityForResult(mpm.createScreenCaptureIntent(), REQ_OCR)
-        } catch (t: Throwable) {
+        } catch (ex: Throwable) {
+            Log.w(TAG, "MainActivity@969: " + ex.message)
         }
     }
 
