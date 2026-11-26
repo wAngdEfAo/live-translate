@@ -415,6 +415,8 @@ class OverlayService : Service() {
         row.addView(dirBtn)
 
         row.addView(barButton("刷新", 0xFFCFD8E3.toInt()) {
+            // 先清掉旧译文再重新取词：新结果为空时旧块不该留在屏幕上
+            renderBlocks(emptyList())
             AppCore.resetDedupe()
             ScreenReaderService.requestCapture()
         })
@@ -633,7 +635,12 @@ class OverlayService : Service() {
     @SuppressLint("WrongConstant")
     private fun renderBlocks(raw: List<Pair<TextBlock, String>>) {
         val layer = blockLayer ?: return
-        val key = raw.joinToString("\u0001") { it.first.text + "\u0002" + it.second }
+        // 去重 key 必须含坐标：文字相同但位置变了（滚动、重新排版）时，
+        // 只按文本比较会直接 return，译文就停在旧位置不动
+        val key = raw.joinToString("\u0001") {
+            it.first.text + "\u0002" + it.second +
+                "\u0002" + it.first.rect.left + "," + it.first.rect.top
+        }
         if (key == lastRenderKey) return
         lastRenderKey = key
         lastBlocks = raw

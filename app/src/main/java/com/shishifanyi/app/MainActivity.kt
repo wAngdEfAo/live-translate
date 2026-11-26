@@ -178,6 +178,9 @@ class MainActivity : Activity() {
     /** 目标语言选择按钮。 */
     private val tgtChips = LinkedHashMap<String, TextView>()
 
+    /** 选中「自动检测」时在卡片里常驻的说明（toast 单行放不下那么长的文案）。 */
+    private var autoHint: TextView? = null
+
     /** 语言包：既能在线下载，也能直接导入 zip。 */
     private fun languageCard(): Pair<LinearLayout, TextView> {
         val card = LinearLayout(this)
@@ -245,6 +248,13 @@ class MainActivity : Activity() {
 
         currentLangLabel = text("当前：英语 → 中文", 12f, R.color.fg_dim, false)
         curRow.addView(currentLangLabel, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+
+        // 「自动检测」的说明用常驻文本，不用 toast——文案太长，toast 一定会被截断
+        val hint = text("", 11f, R.color.fg_dim, false)
+        hint.setPadding(0, 0, 0, dp(8f))
+        hint.visibility = View.GONE
+        card.addView(hint)
+        autoHint = hint
 
         val exp = TextView(this)
         exp.text = "展开 ▾"
@@ -378,12 +388,15 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 选了「自动检测」时提示一次：中转与测试阶段的说明。 */
+    /** 选了「自动检测」时显示常驻说明（toast 放不下完整文案）。 */
     private fun showAutoHint(tgt: String) {
-        toast(
-            "部分语言需经 ML Kit 中转，翻译速度可能受影响，影响程度随 ML Kit 的中转次数增加。" +
-                "自动检测目前还在测试阶段，可能出现翻译时间长、翻译不准确等问题。"
-        )
+        val h = autoHint ?: return
+        h.text = buildString {
+            append("· 部分语言需经 ML Kit 中转，翻译速度可能受影响，影响程度随 ML Kit 的中转次数增加。\n")
+            append("· 自动检测目前还在测试阶段，可能出现翻译时间长、翻译不准确等问题。\n")
+            append("· 当前目标：" + targetName(tgt) + "，检测池 58 种语言（不含" + targetName(tgt) + "自身）。")
+        }
+        h.visibility = View.VISIBLE
     }
 
     /** 切换目标语言；源语言若与新目标撞车，自动换成另一个。 */
@@ -448,6 +461,8 @@ class MainActivity : Activity() {
         val tgt = Prefs.tgtLang
         val curName = if (cur == "auto") "自动检测" else Languages.name(cur)
         currentLangLabel?.text = "当前：$curName → " + targetName(tgt)
+        // 自动检测的说明跟着当前选择走；换成具体语言就收起来
+        if (cur == "auto") showAutoHint(tgt) else autoHint?.visibility = View.GONE
 
         // 目标语言按钮高亮
         for ((code, chip) in tgtChips) {

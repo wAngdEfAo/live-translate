@@ -162,6 +162,28 @@ object AppCore {
         process(filtered)
     }
 
+    /**
+     * 这一块是不是已经是目标语言（目前只用于目标=英语）。
+     *
+     * 只看**非 ASCII 字母**：西语的 á、法语的 é、德语的 ü 都在这里被排除。
+     * 不能看"任何非 ASCII 字符"——英文里的破折号 —、弯引号 ' ' 也是非 ASCII，
+     * 那样会把整段英文误判成"不是英文"照翻一遍。
+     * 剩下全 ASCII 字母的才交给 ML Kit 确认，避免把没有变音符号的西语当成英文漏翻。
+     */
+    private fun blockAlreadyTarget(text: String, tgt: String): Boolean {
+        for (c in text) {
+            if (c.isLetter() && c.code > 127) return false
+        }
+        val latch = CountDownLatch(1)
+        var hit = false
+        LanguageDetector.detectStrict(text) { lang ->
+            hit = (lang == tgt)
+            latch.countDown()
+        }
+        latch.await(300, TimeUnit.MILLISECONDS)
+        return hit
+    }
+
     private fun useOcr(): Boolean = Prefs.ocrFallback && OcrBridge.available()
 
     private fun captureOcr(topY: Int, maxY: Int) {
@@ -180,7 +202,12 @@ object AppCore {
     }
 
     private fun process(blocks: List<TextBlock>) {
-        val key = blocks.joinToString("|") { it.text }
+        // 指纹必须带位置：只按文本做 key 时，同一段文字换了位置（滚动、重新排版）
+        // 会被当成"这一屏已经处理过"，译文就停在原地不动。
+        // 坐标按 4px 量化，避免一两个像素的抖动导致反复重翻。
+        val key = blocks.joinToString("|") {
+            it.text + "@" + (it.rect.left / 4) + "," + (it.rect.top / 4)
+        }
         // lastKey 只记「已经画上去的屏幕」；pendingKey 记「正在处理」，
         // 两者都不等于当前屏才需要再跑——否则截断后同一屏永远不会重试
         if (key == lastKey || key == pendingKey) return
@@ -216,33 +243,19 @@ object AppCore {
             // 整屏总预算 8 秒：30 块 × 4 秒会拖到两分钟，用户会以为卡死
             val deadline = t0 + 8000L
             var failed = 0
+            var skipped = 0
             val pairs = ArrayList<Pair<TextBlock, String>>(blocks.size)
-
-            // 目标是英语、源语言是手动选的别的语言时，屏幕可能本来就是英文。
-            // 这种情况下「西班牙语→英语」会把英文原样吐回来，等于白画一层块。
-            // 先做一次整屏语言判定，已经是英文就跳过。
-            if (tgt == Languages.TARGET_EN && src != Languages.TARGET_EN) {
-                val joined = blocks.joinToString(" ") { it.text }.take(400)
-                val latchT = CountDownLatch(1)
-                var screenLang: String? = null
-                // 用严格版：识别不出时返回 null，不会兜底成 en，避免误跳过西语屏幕
-                LanguageDetector.detectStrict(joined) { lang ->
-                    screenLang = lang
-                    latchT.countDown()
-                }
-                latchT.await(2, TimeUnit.SECONDS)
-                if (screenLang == Languages.TARGET_EN) {
-                    Log.d(TAG, "屏幕内容已是英文，跳过翻译")
-                    main.post {
-                        if (gen == myGen) OverlayService.showBlocks(emptyList())
-                    }
-                    return@execute
-                }
-            }
-
             for (b in blocks) {
                 if (gen != myGen) break
                 if (android.os.SystemClock.elapsedRealtime() > deadline) break
+                // 目标是英语时，逐块判断这块是不是本来就英文；是就不翻，避免"英译英"盖一层块。
+                // 必须逐块：一屏里中英西混排时，整屏判定只会按多数语言一刀切。
+                if (tgt == Languages.TARGET_EN && src != Languages.TARGET_EN &&
+                    blockAlreadyTarget(b.text, tgt)
+                ) {
+                    skipped++
+                    continue
+                }
                 // 命中缓存的不再调用模型
                 val hit = Translator.peek(src, tgt, b.text)
                 if (hit != null && hit.isNotBlank()) {
@@ -270,13 +283,19 @@ object AppCore {
             Log.d(
                 TAG,
                 "翻译 " + pairs.size + "/" + blocks.size + " 块，耗时 " + cost + "ms，语言 " + src +
-                    (if (failed > 0) "，失败 " + failed + " 块" else "")
+                    (if (failed > 0) "，失败 " + failed + " 块" else "") +
+                    (if (skipped > 0) "，本就是目标语言 " + skipped + " 块" else "")
             )
             main.post {
                 try {
                     if (gen != myGen) return@post
                     if (!Prefs.translating) return@post
-                    if (pairs.isEmpty()) return@post
+                    if (pairs.isEmpty()) {
+                        // 这一屏什么都没翻出来：把旧块清掉，
+                        // 否则刷新/滚动后旧译文会一直停在屏幕上
+                        OverlayService.showBlocks(emptyList())
+                        return@post
+                    }
                     OverlayService.showBlocks(pairs)
                     // 真的画上去才算这一屏处理过
                     lastKey = key
