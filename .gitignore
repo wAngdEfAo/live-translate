@@ -1,0 +1,18 @@
+# 构建产物
+build/
+.gradle/
+.kotlin/
+*.apk
+*.aab
+
+# 本地环境（含本机 SDK 路径、私有 aapt2 路径，不能提交）
+local.properties
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+
+# 日志与临时文件
+*.log
+captures/

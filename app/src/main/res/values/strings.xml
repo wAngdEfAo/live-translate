@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">实时翻译</string>
+    <string name="acc_desc">读取屏幕上显示的文字，实时译成中文。</string>
+</resources>
