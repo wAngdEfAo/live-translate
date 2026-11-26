@@ -99,6 +99,9 @@ class MainActivity : Activity() {
         // ADB 开启无障碍
         root.addView(adbCard())
 
+        // 反馈
+        root.addView(feedbackCard())
+
         // 悬浮窗开关
         val showBtn = TextView(this)
         showBtn.text = "显示悬浮窗"
@@ -730,6 +733,87 @@ class MainActivity : Activity() {
             toast("写入失败：" + (t.message ?: "无权限"))
         }
         showBtnRef?.postDelayed({ refresh() }, 400L)
+    }
+
+    /** 反馈：GitHub Issue 与邮件两条路，正文自动带上版本、系统与机型。 */
+    private fun feedbackCard(): LinearLayout {
+        val card = LinearLayout(this)
+        card.orientation = LinearLayout.VERTICAL
+        card.background = rounded(R.color.card, 16f)
+        card.setPadding(dp(18f), dp(16f), dp(18f), dp(16f))
+        val lp = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        )
+        lp.topMargin = dp(12f)
+        card.layoutParams = lp
+
+        card.addView(text("反馈", 15f, R.color.fg, true))
+        card.addView(
+            text(
+                "版本 " + versionLabel() + "。遇到问题请写清现象与复现步骤；版本、系统、机型会自动带上。",
+                12f, R.color.fg_dim, false
+            ).apply { setPadding(0, dp(6f), 0, dp(10f)) }
+        )
+
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        val issues = smallBtn("GitHub Issues", R.color.accent) { openIssues() }
+        val issuesLp = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        )
+        issuesLp.rightMargin = dp(10f)
+        row.addView(issues, issuesLp)
+        row.addView(smallBtn("邮件反馈", R.color.fg_dim) { openMail() })
+        card.addView(row)
+
+        return card
+    }
+
+    /** 形如 4.9.3 (45)，反馈里要能一眼看出装的是哪个包。 */
+    private fun versionLabel(): String = try {
+        val info = packageManager.getPackageInfo(packageName, 0)
+        val code = if (android.os.Build.VERSION.SDK_INT >= 28) info.longVersionCode
+        else @Suppress("DEPRECATION") info.versionCode.toLong()
+        (info.versionName ?: "?") + " (" + code + ")"
+    } catch (e: Throwable) {
+        "?"
+    }
+
+    /** 反馈正文的固定尾巴：这几项决定了能不能复现，尤其是 ROM 相关的毛病。 */
+    private fun deviceInfo(): String {
+        val abi = android.os.Build.SUPPORTED_ABIS?.firstOrNull() ?: "?"
+        return "版本：" + versionLabel() +
+            "\n系统：Android " + android.os.Build.VERSION.RELEASE +
+            " (API " + android.os.Build.VERSION.SDK_INT + ")" +
+            "\n机型：" + android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL + " / " + abi
+    }
+
+    private fun openIssues() {
+        val body = "\n\n--- 以下信息请保留 ---\n" + deviceInfo()
+        val url = "https://github.com/wAngdEfAo/live-translate/issues/new" +
+            "?title=" + android.net.Uri.encode("反馈：") +
+            "&body=" + android.net.Uri.encode(body)
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+        } catch (e: Throwable) {
+            toast("没有可用的浏览器，可直接访问 github.com/wAngdEfAo/live-translate/issues")
+        }
+    }
+
+    private fun openMail() {
+        val subject = "实时翻译 " + versionLabel() + " 反馈"
+        val body = "\n\n--- 以下信息请保留 ---\n" + deviceInfo()
+        val uri = android.net.Uri.parse(
+            "mailto:qzwtml@outlook.com" +
+                "?subject=" + android.net.Uri.encode(subject) +
+                "&body=" + android.net.Uri.encode(body)
+        )
+        try {
+            startActivity(Intent(Intent.ACTION_SENDTO, uri))
+        } catch (e: Throwable) {
+            toast("没有邮件客户端，可手动发到 qzwtml@outlook.com")
+        }
     }
 
     private fun smallBtn(label: String, colorRes: Int, onClick: () -> Unit): TextView {

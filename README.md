@@ -117,6 +117,19 @@ keyPassword=你的密钥密码
 - 密码 / 验证码输入框不会翻译（无障碍侧按 `isPassword` 跳过，OCR 侧跳过圆点/星号行）
 - 使用自签名证书发布，首次安装需允许「未知来源」
 
+## 反馈
+
+- GitHub Issues：<https://github.com/wAngdEfAo/live-translate/issues>
+- 邮件：<qzwtml@outlook.com>
+
+App 里的「反馈」卡片可以直接打开这两个入口，并把版本号、Android 版本、机型自动填进正文。
+
+报问题时请写清现象和复现步骤，另外这几个信息最有帮助：
+
+- 是哪个界面 / 哪个 App 上出的问题（银行、支付类 App 常屏蔽无障碍节点，只能走 OCR）
+- 同一屏幕上其他无障碍服务是否也在运行
+- 关掉「精准模式」或「OCR 兜底」后是否复现
+
 ## 许可
 
 本项目采用 [MIT License](LICENSE)，可自由使用、修改、分发与商用，保留版权声明即可。
