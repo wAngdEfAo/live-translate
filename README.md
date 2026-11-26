@@ -62,3 +62,7 @@ echo "sdk.dir=/path/to/Android/Sdk" > local.properties
 ## 许可
 
 未指定，使用前请联系仓库作者。
+
+---
+
+此仓库由 dsh-go 发布。
