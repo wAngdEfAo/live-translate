@@ -29,17 +29,31 @@ adb shell pm grant com.yg.livetranslate android.permission.WRITE_SECURE_SETTINGS
 
 ## 编译
 
-需要 JDK 17、Android SDK（platform 36、build-tools 36.0.0）。
+环境要求：
+
+- JDK 17
+- Android SDK：platform 36、build-tools 36.0.0
+- Gradle 8.11.1
 
 ```bash
-# 在 local.properties 写入本机 SDK 路径
 echo "sdk.dir=/path/to/Android/Sdk" > local.properties
-
-./gradlew assembleDebug
+./gradlew assembleDebug     # 调试包：不混淆，产物与源码一一对应
+./gradlew assembleRelease   # 正式签名包：需 keystore.properties
 ```
 
-如果使用 arm64 Linux 主机，可能需要在 `gradle.properties` 中通过
-`android.aapt2FromMavenOverride` 指定可用的 aapt2 路径。
+签名配置放在 `keystore.properties`（**不在仓库中**，已在 .gitignore 忽略）：
+
+```properties
+storeFile=/absolute/path/to/your.jks
+storePassword=你的密钥库密码
+keyAlias=你的别名
+keyPassword=你的密钥密码
+```
+
+缺少该文件时 release 以未签名方式产出，需自行签名后分发。
+
+> arm64 Linux 主机若缺少可用 aapt2，可在 `gradle.properties` 中通过
+> `android.aapt2FromMavenOverride` 指向本地 aapt2 路径。
 
 ## 实现要点
 
@@ -52,12 +66,33 @@ echo "sdk.dir=/path/to/Android/Sdk" > local.properties
 | `OverlayService` | 覆盖层渲染、手势、历史、控制条、前台常驻 |
 | `MainActivity` | 权限引导、语言包管理、存储管理 |
 
+## 安全与隐私
+
+本项目**不做任何数据上传**。逐条说明权限用途：
+
+| 权限 | 用途 | 何时触发 |
+|---|---|---|
+| 无障碍服务 | 读取当前屏幕上的文字与其位置 | 屏幕内容变化且翻译开关开启时 |
+| 悬浮窗 | 在原文位置绘制译文覆盖层 | 显示译文时 |
+| 屏幕捕获（可选） | 无障碍读不到文字时截图做 OCR 兜底、并采样背景色 | 仅在该界面无可用文字时 |
+| 前台服务 | 保持悬浮层与截屏服务存活 | 悬浮窗开启期间 |
+| 通知 | 显示前台服务状态 | 常驻通知，可关闭 |
+
+数据流向：
+
+- 翻译全程在**本地模型**完成，屏幕内容不出设备
+- 译文只存在于内存，最多保留最近 3 条，不写磁盘
+- 无广告、无统计 SDK、无第三方上报
+- 唯一的网络请求是首次下载语言包（也可用导入 zip 离线完成）
+
+可自行验证：源码 MIT 公开、debug 构建不混淆，可自行编译后与本 Release APK 比对代码行为。
+
 ## 已知限制
 
 - 银行、支付类 App 常屏蔽无障碍节点，只能依赖 OCR
 - 覆盖不到状态栏 / 通知栏
 - 部分国产 ROM 会回收无障碍服务，需要手动重新开启
-- 这是 debug 签名构建，不适合直接上架应用商店
+- 使用自签名证书发布，首次安装需允许「未知来源」
 
 ## 许可
 
