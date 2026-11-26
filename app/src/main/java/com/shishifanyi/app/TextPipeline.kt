@@ -10,10 +10,10 @@ data class FilterStats(
     var total: Int = 0,
     var small: Int = 0,
     var short: Int = 0,
-    var fewWords: Int = 0,
     var lowLetters: Int = 0,
     var script: Int = 0,
     var chinese: Int = 0,
+    var masked: Int = 0,
     var url: Int = 0,
     var outside: Int = 0,
     var kept: Int = 0
@@ -21,8 +21,8 @@ data class FilterStats(
     fun brief(): String =
         "总" + total + " 留" + kept +
             " | 出区" + outside + " 太小" + small + " 太短" + short +
-            " 词少" + fewWords + " 字母少" + lowLetters +
-            " 脚本" + script + " 中文" + chinese + " 链接" + url
+            " 字母少" + lowLetters +
+            " 脚本" + script + " 中文" + chinese + " 掩码" + masked + " 链接" + url
 }
 
 /** 屏幕原始文字块 -> 只保留值得翻译的英文块。 */
@@ -110,12 +110,6 @@ object TextPipeline {
     }
     private const val MAX_TOTAL_CHARS = 1600
 
-    /**
-     * @param maxY 只处理屏幕这个 y 坐标以上的文字（顶部 60% 区域）。
-     */
-    fun filter(blocks: List<TextBlock>, maxY: Int): List<TextBlock> =
-        filter(blocks, maxY, Prefs.srcLang)
-
     fun filter(
         blocks: List<TextBlock>,
         maxY: Int,
@@ -151,7 +145,8 @@ object TextPipeline {
             if (line == prev) continue
 
             if (maskRe.matches(line)) {
-                if (stats != null) stats.script++
+                // 掩码行不是"脚本不符"，单独计数才看得懂日志
+                if (stats != null) stats.masked++
                 continue
             }
 

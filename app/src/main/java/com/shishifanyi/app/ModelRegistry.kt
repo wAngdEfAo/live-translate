@@ -4,7 +4,6 @@ import android.content.Context
 import android.util.Log
 import org.json.JSONObject
 import java.io.File
-import java.security.MessageDigest
 
 /**
  * 让 ML Kit 认可"手工导入"的语言包。
@@ -21,9 +20,6 @@ object ModelRegistry {
 
     /** ML Kit 内部偏好文件名。 */
     private const val PREF = "com.google.mlkit.translate.download_manager"
-
-    private fun prefFile(ctx: Context): File =
-        File(ctx.filesDir, "../shared_prefs/$PREF.xml").canonicalFile
 
     private fun modelRoot(ctx: Context): File =
         File(ctx.noBackupFilesDir, "com.google.mlkit.translate.models")
@@ -44,24 +40,6 @@ object ModelRegistry {
         val parts = body.split('_')
         if (parts.size < 2) return null
         return Pair(parts[0], parts[1])
-    }
-
-    /** 计算文件 sha256。 */
-    fun sha256Of(file: File): String? {
-        return try {
-            val md = MessageDigest.getInstance("SHA-256")
-            file.inputStream().use { ins ->
-                val buf = ByteArray(1 shl 16)
-                while (true) {
-                    val n = ins.read(buf)
-                    if (n <= 0) break
-                    md.update(buf, 0, n)
-                }
-            }
-            md.digest().joinToString("") { "%02x".format(it) }
-        } catch (t: Throwable) {
-            null
-        }
     }
 
     /**
@@ -104,17 +82,6 @@ object ModelRegistry {
     }
 
     /** 清除某个模型的登记。 */
-    fun unregister(ctx: Context, dirName: String): Boolean {
-        return try {
-            val main = ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE)
-            main.edit()
-                .remove("current_model_hash_" + dirName)
-                .remove("model_first_use_time_" + dirName)
-                .commit()
-        } catch (t: Throwable) {
-            false
-        }
-    }
 
     /**
      * 从 app 内打包的官方索引里查 hash。
@@ -125,11 +92,17 @@ object ModelRegistry {
         return try {
             ctx.assets.open("translate_models_metadata.json").use { ins ->
                 val json = JSONObject(ins.bufferedReader().readText())
-                for (pkg in json.keys()) {
+                // 不能遍历 json.keys()：Android 的 JSONObject 内部是 HashMap，顺序不保证。
+                // 同一语言对在 PKG_HIGH / PKG_LOW 里 HASH 完全不同（27 个语言对全部如此），
+                // 取错变体会把 ML Kit 的模型判成损坏。这里按固定顺序找，并记录实际取的是哪个包。
+                for (pkg in PKG_ORDER) {
                     val group = json.optJSONObject(pkg) ?: continue
                     val entry = group.optJSONObject(langPair) ?: continue
                     val h = entry.optString("HASH", "")
-                    if (h.isNotEmpty()) return h
+                    if (h.isNotEmpty()) {
+                        Log.d(TAG, "officialHash($langPair) 取自 $pkg")
+                        return h
+                    }
                 }
             }
             null
@@ -138,4 +111,7 @@ object ModelRegistry {
             null
         }
     }
+
+    /** 变体优先级：高配包优先，没有再退到低配包。顺序写死，不看 JSON 遍历顺序。 */
+    private val PKG_ORDER = listOf("PKG_HIGH", "PKG_LOW")
 }

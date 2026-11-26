@@ -18,12 +18,19 @@ object AppCore {
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
 
+    /** 过滤 / 合并 / 取词判定的串行线程，避免占用主线程。 */
+    private val filterWorker = Executors.newSingleThreadExecutor()
+
     @Volatile
     private var lastKey: String = ""
 
     /** 每次取词批次自增；旧批次的翻译结果一律丢弃，避免盖住新屏幕。 */
     @Volatile
     private var gen: Int = 0
+
+    /** 正在处理中的屏幕指纹；与 lastKey 分开，避免"没画上去却认账"。 */
+    @Volatile
+    private var pendingKey: String = ""
 
     @Volatile
     private var ocrBusy: Boolean = false
@@ -47,30 +54,40 @@ object AppCore {
         }
     }
 
-    fun context(): Context? = app
-
     /** 翻译开关或 OCR 开关变化后，按需启停截屏服务，暂停时不留常驻。 */
     fun syncOcrService() {
         val ctx = app ?: return
         try {
-            if (Prefs.translating && Prefs.ocrFallback && OcrService.hasPermission() &&
-                OverlayService.isShowing()
-            ) {
+            // token 用掉后 hasPermission() 会变 false，但服务可能正跑着；两个条件都要认
+            val usable = OcrService.hasPermission() || OcrService.isRunning()
+            if (Prefs.translating && Prefs.ocrFallback && usable && OverlayService.isShowing()) {
                 OcrService.start(ctx)
             } else {
                 OcrService.stop(ctx)
             }
         } catch (ex: Throwable) {
-            Log.w(TAG, "AppCore@57: " + ex.message)
+            Log.w(TAG, "AppCore@50: " + ex.message)
         }
     }
 
     fun resetDedupe() {
         lastKey = ""
+        pendingKey = ""
     }
 
     fun screenHeight(): Int {
         val c = app ?: return 0
+        // 必须和 OverlayService.applyScreenMetrics() 用同一套口径，
+        // 否则分屏 / 手势导航时区域边界与渲染窗口坐标系对不上
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            try {
+                val wm = c.getSystemService(Context.WINDOW_SERVICE) as android.view.WindowManager
+                val b = wm.maximumWindowMetrics.bounds
+                if (b.height() > 0) return b.height()
+            } catch (ex: Throwable) {
+                Log.w(TAG, "AppCore@70: " + ex.message)
+            }
+        }
         return c.resources.displayMetrics.heightPixels
     }
 
@@ -91,6 +108,14 @@ object AppCore {
      */
     fun onBlocks(blocks: List<TextBlock>) {
         if (!Prefs.translating) return
+        // 悬浮窗没开就没有人消费译文，白翻译只是发热耗电
+        if (!OverlayService.isShowing()) return
+        // 过滤与按行合并是纯 CPU 活，一屏上千节点时放主线程会直接掉帧；
+        // 用单独的单线程串行处理，顺带保证 emptyStreak 这类计数不会并发写坏
+        filterWorker.execute { handleBlocks(blocks) }
+    }
+
+    private fun handleBlocks(blocks: List<TextBlock>) {
         val (topY, maxY) = regionBounds()
 
         val now = android.os.SystemClock.elapsedRealtime()
@@ -121,7 +146,7 @@ object AppCore {
                 Log.d(TAG, "连续无内容，暂停取词 5 秒")
             }
             // 无障碍读不到字，才动 OCR
-            if (useOcr()) captureOcr(maxY)
+            if (useOcr()) captureOcr(topY, maxY)
             return
         }
         emptyStreak = 0
@@ -130,7 +155,7 @@ object AppCore {
         // 精准模式：每次都走 OCR，坐标更准但更费电。
         if (Prefs.accurateMode || TextPipeline.looksFragmented(filtered)) {
             if (useOcr()) {
-                captureOcr(maxY)
+                captureOcr(topY, maxY)
                 return
             }
         }
@@ -139,7 +164,7 @@ object AppCore {
 
     private fun useOcr(): Boolean = Prefs.ocrFallback && OcrBridge.available()
 
-    private fun captureOcr(maxY: Int) {
+    private fun captureOcr(topY: Int, maxY: Int) {
         if (ocrBusy) return
         val now = android.os.SystemClock.elapsedRealtime()
         if (now - lastCaptureAt < MIN_CAPTURE_GAP) return
@@ -148,15 +173,18 @@ object AppCore {
         OcrBridge.captureBlocks { list ->
             ocrBusy = false
             if (!Prefs.translating) return@captureBlocks
-            val filtered = TextPipeline.filter(list, maxY, Prefs.srcLang)
+            // 和无障碍路径一样要带上 minY：从底部往上的区域，上半屏不该翻
+            val filtered = TextPipeline.filter(list, maxY, Prefs.srcLang, topY)
             if (filtered.isNotEmpty()) process(filtered)
         }
     }
 
     private fun process(blocks: List<TextBlock>) {
         val key = blocks.joinToString("|") { it.text }
-        if (key == lastKey) return
-        lastKey = key
+        // lastKey 只记「已经画上去的屏幕」；pendingKey 记「正在处理」，
+        // 两者都不等于当前屏才需要再跑——否则截断后同一屏永远不会重试
+        if (key == lastKey || key == pendingKey) return
+        pendingKey = key
         val myGen = ++gen
 
         worker.execute {
@@ -180,7 +208,7 @@ object AppCore {
             var failed = 0
             val pairs = ArrayList<Pair<TextBlock, String>>(blocks.size)
             for (b in blocks) {
-                if (gen != myGen) return@execute
+                if (gen != myGen) break
                 if (android.os.SystemClock.elapsedRealtime() > deadline) break
                 // 命中缓存的不再调用模型
                 val hit = Translator.peek(src, b.text)
@@ -212,12 +240,19 @@ object AppCore {
                     (if (failed > 0) "，失败 " + failed + " 块" else "")
             )
             main.post {
-                if (gen != myGen) return@post
-                if (!Prefs.translating) return@post
-                if (pairs.isEmpty()) return@post
-                OverlayService.showBlocks(pairs)
-                val joined = pairs.joinToString("\n") { it.second }
-                OverlayService.pushHistory(joined)
+                try {
+                    if (gen != myGen) return@post
+                    if (!Prefs.translating) return@post
+                    if (pairs.isEmpty()) return@post
+                    OverlayService.showBlocks(pairs)
+                    // 真的画上去才算这一屏处理过
+                    lastKey = key
+                    val joined = pairs.joinToString("\n") { it.second }
+                    OverlayService.pushHistory(joined)
+                } finally {
+                    // 没画成功就放开，下次同一屏还能重试
+                    if (pendingKey == key) pendingKey = ""
+                }
             }
         }
     }

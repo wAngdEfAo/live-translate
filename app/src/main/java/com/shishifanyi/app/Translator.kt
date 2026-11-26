@@ -2,18 +2,6 @@ package com.shishifanyi.app
 
 import com.google.mlkit.common.model.DownloadConditions
 
-/** 翻译引擎接口，方便以后换成别的离线模型。 */
-interface TransEngine {
-    fun translate(text: String, cb: (String?, String) -> Unit)
-}
-
-/** 默认引擎：ML Kit 离线翻译。 */
-object MlKitEngine : TransEngine {
-    override fun translate(text: String, cb: (String?, String) -> Unit) {
-        Translator.translateWith(Prefs.srcLang, text, cb)
-    }
-}
-
 object Translator {
 
     private const val CACHE_MAX = 60
@@ -22,13 +10,6 @@ object Translator {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean {
             return size > CACHE_MAX
         }
-    }
-
-    @Volatile
-    private var engine: TransEngine = MlKitEngine
-
-    fun setEngine(e: TransEngine) {
-        engine = e
     }
 
     @Synchronized
@@ -86,21 +67,28 @@ object Translator {
                     done(null, out)
                 }
                 .addOnFailureListener { first ->
-                    // 缺语言包时自动下一次，再重试一次
-                    try {
-                        client.downloadModelIfNeeded(DownloadConditions.Builder().build())
-                            .addOnSuccessListener {
-                                client.translate(text)
-                                    .addOnSuccessListener { zh ->
-                                        val out = zh ?: ""
-                                        if (out.isNotBlank()) remember(key, out)
-                                        done(null, out)
-                                    }
-                                    .addOnFailureListener { done(it.message ?: "翻译失败", "") }
-                            }
-                            .addOnFailureListener { done(first.message ?: "翻译失败", "") }
-                    } catch (t: Throwable) {
-                        done(first.message ?: "翻译失败", "")
+                    // 只有「模型确实没下载」才补下载。原来是无条件下载，
+                    // 任何失败（包括内存不足、语种不支持）都会偷偷联网，和隐私承诺冲突
+                    LanguagePack.isDownloaded(lang) { downloaded ->
+                        if (downloaded) {
+                            done(first.message ?: "翻译失败", "")
+                            return@isDownloaded
+                        }
+                        try {
+                            client.downloadModelIfNeeded(DownloadConditions.Builder().build())
+                                .addOnSuccessListener {
+                                    client.translate(text)
+                                        .addOnSuccessListener { zh ->
+                                            val out = zh ?: ""
+                                            if (out.isNotBlank()) remember(key, out)
+                                            done(null, out)
+                                        }
+                                        .addOnFailureListener { done(it.message ?: "翻译失败", "") }
+                                }
+                                .addOnFailureListener { done(first.message ?: "翻译失败", "") }
+                        } catch (t: Throwable) {
+                            done(first.message ?: "翻译失败", "")
+                        }
                     }
                 }
         } catch (t: Throwable) {

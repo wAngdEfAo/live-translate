@@ -6,6 +6,7 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 
@@ -16,6 +17,12 @@ import android.view.accessibility.AccessibilityNodeInfo
 class ScreenReaderService : AccessibilityService() {
 
     companion object {
+        private const val TAG = "ScreenReader"
+
+        /** 单次抓取的节点上限；超过就只取前这么多，避免主线程被超长列表拖死。
+         *  开了 flagIncludeNotImportantViews 后节点会变多，这里相应放宽。 */
+        private const val MAX_NODES = 1200
+
         @Volatile
         var instance: ScreenReaderService? = null
             private set
@@ -86,6 +93,10 @@ class ScreenReaderService : AccessibilityService() {
         nodeBudget = 0
         buf.clear()
         collect(root, 0)
+        // 触顶时明确记一笔：否则长列表页下半屏一直不翻，却查不出原因
+        if (nodeBudget > MAX_NODES) {
+            Log.w(TAG, "节点数超过 $MAX_NODES，本次只处理前 $MAX_NODES 个，靠后的内容可能漏译")
+        }
         if (buf.isEmpty()) {
             AppCore.onBlocks(emptyList())
             return
@@ -99,7 +110,7 @@ class ScreenReaderService : AccessibilityService() {
         try {
             if (depth > 40) return
             nodeBudget++
-            if (nodeBudget > 800) return
+            if (nodeBudget > MAX_NODES) return
 
             // 密码 / 验证码输入框：整棵子树都不读，内容不该被翻译，更不该进翻译引擎
             if (node.isPassword) return

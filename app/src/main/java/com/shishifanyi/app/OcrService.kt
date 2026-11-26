@@ -148,11 +148,17 @@ class OcrService : Service() {
         try {
             val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             val p = mpm.getMediaProjection(Activity.RESULT_OK, data) ?: return
+            // token 从 Android 14 起是一次性的：用掉即作废。
+            // 不清空的话，下次启动会拿同一个 Intent 再调 getMediaProjection，必然抛
+            // SecurityException；而 hasPermission() 还一直返回 true，用户看到"有权限"却永远识别不了。
+            setPermission(null)
             if (Build.VERSION.SDK_INT >= 34) p.registerCallback(projectionCallback, main)
             projection = p
 
             Log.d(TAG, "投影就绪（按需开镜像）")
         } catch (t: Throwable) {
+            // 失败同样要作废，否则这一屏的 token 会卡住后续所有启动
+            setPermission(null)
             Log.w(TAG, "OCR 采集初始化失败: " + t.message)
             releaseCapture()
         }
@@ -170,6 +176,8 @@ class OcrService : Service() {
         return try {
             val dm = resources.displayMetrics
             val r = ImageReader.newInstance(
+                // 这里用 PixelFormat 是对的：ImageFormat 里没有 RGBA_8888，
+                // ImageReader 接受 PixelFormat.RGBA_8888（与 ImageFormat 的编号体系不同）
                 dm.widthPixels, dm.heightPixels, PixelFormat.RGBA_8888, 2
             )
             val vd = p.createVirtualDisplay(

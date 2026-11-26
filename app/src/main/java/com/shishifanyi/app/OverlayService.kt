@@ -203,6 +203,8 @@ class OverlayService : Service() {
         super.onConfigurationChanged(newConfig)
         applyScreenMetrics()
         updateRegion()
+        // 横竖屏切换后状态栏高度会变，必须重测内缩，否则整体偏一截
+        remeasureInsets()
         // 块层是按旧尺寸创建的，不跟着改就只在左上角一小块里画
         val l = blockLayer
         if (l != null) {
@@ -333,33 +335,39 @@ class OverlayService : Service() {
             return
         }
 
+        remeasureInsets()
+    }
+
+    /**
+     * 测量窗口在屏幕上的实际内缩（状态栏高度）。
+     * 必须可重复调用：横竖屏切换时状态栏高度会变，只测一次会让分界线与译文整体偏一截。
+     */
+    private fun remeasureInsets() {
+        val row = lineWin ?: return
         row.post {
             try {
                 val loc = IntArray(2)
                 row.getLocationOnScreen(loc)
-                val measured = loc[1] - (regionH - dp(6f))
-                if (!insetReady) {
-                    insetReady = true
-                    insetY = measured
-                    // 把分界线挪回真正的 60% 位置
-                    val rp = row.layoutParams as WindowManager.LayoutParams
-                    rp.y = regionH - dp(6f) - insetY
-                    wm.updateViewLayout(row, rp)
-                    // 控制条默认也贴到线下方
-                    val b = bar
-                    val bp = barLp
-                    if (b != null && bp != null && Prefs.barY < 0) {
-                        bp.y = regionH + dp(6f) - insetY
-                        try {
-                            wm.updateViewLayout(b, bp)
-                        } catch (ex: Throwable) {
-                            Log.w(TAG, "OverlayService@305: " + ex.message)
-                        }
+                insetY = loc[1] - (regionH - dp(6f))
+                insetReady = true
+                // 把分界线挪回真正的区域边界
+                val rp = row.layoutParams as WindowManager.LayoutParams
+                rp.y = (regionH - dp(6f) - insetY).coerceAtLeast(0)
+                wm.updateViewLayout(row, rp)
+                // 控制条默认也贴到线下方
+                val b = bar
+                val bp = barLp
+                if (b != null && bp != null && Prefs.barY < 0) {
+                    bp.y = regionH + dp(6f) - insetY
+                    try {
+                        wm.updateViewLayout(b, bp)
+                    } catch (ex: Throwable) {
+                        Log.w(TAG, "OverlayService@362: " + ex.message)
                     }
-                    if (lastBlocks.isNotEmpty()) renderBlocks(lastBlocks)
                 }
+                if (lastBlocks.isNotEmpty()) renderBlocks(lastBlocks)
             } catch (ex: Throwable) {
-                Log.w(TAG, "OverlayService@310: " + ex.message)
+                Log.w(TAG, "OverlayService@369: " + ex.message)
             }
         }
     }

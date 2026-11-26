@@ -90,9 +90,6 @@ object LanguagePack {
         return c
     }
 
-    fun current(): com.google.mlkit.nl.translate.Translator =
-        clientFor(Prefs.srcLang, Prefs.tgtLang)
-
     /** 该源语言模型是否已下载。 */
     fun isDownloaded(src: String, cb: (Boolean) -> Unit) {
         try {
@@ -107,18 +104,29 @@ object LanguagePack {
 
     fun download(src: String, tgt: String, cb: (Boolean, String) -> Unit) {
         if (busy) return
+        // "auto" 不是 ML Kit 认识的语种标签，拿它下载必然失败
+        if (src.isBlank() || src == "auto") {
+            cb(false, "请先选具体语言，「自动检测」不能用来下载")
+            return
+        }
         busy = true
-        val cond = DownloadConditions.Builder().build()
-        clientFor(src, tgt).downloadModelIfNeeded(cond)
-            .addOnSuccessListener {
-                busy = false
-                ready = true
-                cb(true, "已就绪")
-            }
-            .addOnFailureListener { e ->
-                busy = false
-                cb(false, "下载失败：" + (e.message ?: "网络错误"))
-            }
+        try {
+            val cond = DownloadConditions.Builder().build()
+            clientFor(src, tgt).downloadModelIfNeeded(cond)
+                .addOnSuccessListener {
+                    busy = false
+                    ready = true
+                    cb(true, "已就绪")
+                }
+                .addOnFailureListener { e ->
+                    busy = false
+                    cb(false, "下载失败：" + (e.message ?: "网络错误"))
+                }
+        } catch (t: Throwable) {
+            // getClient 对非法语种会直接抛；不复位 busy 的话，之后每次下载都被 if (busy) 静默吞掉
+            busy = false
+            cb(false, "下载失败：" + (t.message ?: "未知错误"))
+        }
     }
 
     /** 导入 zip 后试翻一句，验证模型真的可用。 */
@@ -142,6 +150,8 @@ object LanguagePack {
             val model = TranslateRemoteModel.Builder(src).build()
             RemoteModelManager.getInstance().deleteDownloadedModel(model)
                 .addOnSuccessListener {
+                    // 复位就绪状态：否则 refresh() 见 ready==true 会短路，删完还显示"已就绪"
+                    ready = false
                     // 摘掉并 close：只从 map 里移除会让原生模型一直挂着
                     val gone = clients.remove(key(src, Prefs.tgtLang))
                     try {

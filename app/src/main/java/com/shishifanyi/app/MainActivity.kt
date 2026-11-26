@@ -330,15 +330,29 @@ class MainActivity : Activity() {
                             refresh()
                         }
                     }
-                } else {
+                } else if (code == "auto") {
+                    // 自动检测不需要下载模型，直接切
                     Prefs.srcLang = code
+                    LanguagePack.ready = false
+                    AppCore.resetDedupe()
+                    refreshLangRows()
+                    refresh()
+                } else {
                     packState?.text = "下载中"
                     packState?.setTextColor(color(R.color.accent))
                     LanguagePack.download(code, Prefs.tgtLang) { ok, msg ->
                         runOnUiThread {
                             packState?.text = msg
                             packState?.setTextColor(color(if (ok) R.color.ok else R.color.warn))
+                            // 只有下载成功才切源语言；失败就留在原语言，
+                            // 否则每块翻译都要等 2 秒超时，整屏等于瘫掉
+                            if (ok) {
+                                Prefs.srcLang = code
+                                LanguagePack.ready = false
+                                AppCore.resetDedupe()
+                            }
                             refreshLangRows()
+                            refresh()
                         }
                     }
                 }
@@ -683,6 +697,19 @@ class MainActivity : Activity() {
     }
 
     /** 已授权时直接改系统设置：只追加自己这一条，保留其它无障碍服务。 */
+    /** 读回 Settings，确认写入真的生效（部分 ROM 会静默拒绝）。 */
+    private fun readBackAccessibility(svc: String): Boolean {
+        return try {
+            val cur = Settings.Secure.getString(
+                contentResolver,
+                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+            ) ?: return false
+            cur.split(':').any { it.equals(svc, true) }
+        } catch (e: Throwable) {
+            false
+        }
+    }
+
     private fun toggleAccessibilityBySelf() {
         if (!hasWriteSecure()) {
             toast("尚未授权，请先复制上面的命令在电脑 cmd 里执行一次")
@@ -703,7 +730,10 @@ class MainActivity : Activity() {
                     Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
                     kept
                 )
-                toast("已关闭无障碍")
+                toast(
+                    if (readBackAccessibility(svc)) "已关闭无障碍"
+                    else "写入未生效，请在系统设置里手动关闭"
+                )
             } else {
                 val cur = Settings.Secure.getString(
                     contentResolver,
@@ -720,7 +750,11 @@ class MainActivity : Activity() {
                     merged
                 )
                 Settings.Secure.putInt(contentResolver, Settings.Secure.ACCESSIBILITY_ENABLED, 1)
-                toast("已开启无障碍")
+                // 读回校验：部分 ROM 会拒绝或延后应用写入，乐观提示会让人以为已经开了
+                toast(
+                    if (readBackAccessibility(svc)) "已开启无障碍"
+                    else "写入未生效，请在系统设置里手动开启"
+                )
             }
         } catch (t: Throwable) {
             toast("写入失败：" + (t.message ?: "无权限"))
@@ -1052,6 +1086,11 @@ class MainActivity : Activity() {
     }
 
     private fun ensureOcrPermission() {
+        // 没有悬浮窗就没有需要 OCR 的场合，别白挂一个前台服务 + 录屏指示器
+        if (!OverlayService.isShowing()) {
+            toast("先开启悬浮窗，OCR 才会跟着悬浮窗一起工作")
+            return
+        }
         if (OcrService.hasPermission() || OcrService.isRunning()) {
             OcrService.start(this)
             return
