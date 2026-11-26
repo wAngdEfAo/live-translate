@@ -38,7 +38,7 @@ import java.util.Locale
 import kotlin.math.abs
 
 /**
- * 覆盖式译文：只在英文文字所在的矩形上覆盖中文，空白与图片保持透明。
+ * 覆盖式译文：只在原文文字所在的矩形上覆盖译文（中文或英文），空白与图片保持透明。
  * 只处理屏幕顶部 60% 区域。另有一条很窄的控制条。
  */
 class OverlayService : Service() {

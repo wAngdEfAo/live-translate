@@ -16,7 +16,7 @@ Android 屏幕实时翻译：把屏幕上显示的外文**就地**换成中文�
 
 ## 安装
 
-1. 下载 `app-debug.apk`（Release 页或自行编译）
+1. 下载 Release 页里的 `live-translate-vX.Y-release.apk`（或自行编译）
 2. 允许未知来源安装
 3. 按 App 内三步引导：无障碍权限 → 悬浮窗权限 → 下载语言包
 
