@@ -337,10 +337,10 @@ class OcrService : Service() {
                     true
                 )
             } else {
-                // 不再缩小：直接沿用该位图，但比例必须保留 baseScale，
-                // 否则降采样过的帧会被当成 1:1，取色又偏。
+                // 不再缩小：必须另建独立副本。
+                // 直接引用 bmp 会在识别回调 recycle() 后失效，取色从此永远返回 null。
                 smallScale = baseScale
-                if (baseScale >= 1f) bmp else null
+                Bitmap.createBitmap(bmp)
             }
         } catch (t: Throwable) {
             smallFrame = null

@@ -211,8 +211,11 @@ object AppCore {
         val latch = CountDownLatch(pending.size)
         for (t in pending) {
             LanguageDetector.detectStrict(t) { lang ->
-                if (lang != null) result[t] = lang
-                rememberLang(t, lang)
+                // 只缓存成功结果：超时/失败写成"und"会让这句永久不再重判
+                if (lang != null) {
+                    result[t] = lang
+                    rememberLang(t, lang)
+                }
                 latch.countDown()
             }
         }
