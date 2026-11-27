@@ -400,14 +400,20 @@ object OnnxEngine : TransEngine {
      * 即使此刻 active == 0 也不能直接关：另一个线程可能正好 incrementAndGet() 并排上任务、
      * ensureLoaded 已经拿到会话引用。所以统一置标记，并往 exec 投一个空任务，
      * 让清理发生在推理线程的空闲边界上。
+     *
+     * @param urgent 只有「前台运行时真告急」（RUNNING_CRITICAL）才设静默期。
+     *   后台 LRU 级别（MODERATE/COMPLETE）释放照做，但不设：用户十秒后回到前台时
+     *   应当在需要时重建，而不是静默降级近一分钟还显示着「高精度」。
      */
-    fun releaseUnderPressure() {
+    fun releaseUnderPressure(urgent: Boolean = true) {
         releasePending = true
-        // 关键：释放后要有一段「别再加载」的静默期。
-        // 否则队列里下一个任务会立刻进 ensureLoaded 重新读 146MB 模型 ——
-        // 而触发释放的正是内存最紧张的时刻，"释放"就变成了"关掉再打开"，
-        // LMK 压力下下一次分配就可能被杀或 OOM。
-        noLoadUntil = System.currentTimeMillis() + PRESSURE_COOL_MS
+        // 没有会话在用的时候，这次 trim 不该影响高精度的可用性
+        val hadSession = loadedKey != null || enc != null || dec != null
+        if (urgent && hadSession) {
+            // 释放后要有一段「别再加载」的静默期：否则队列里下一个任务会立刻进 ensureLoaded
+            // 重新读 146MB —— 触发释放的正是内存最紧张的时刻，"释放"就变成"关掉再打开"。
+            noLoadUntil = System.currentTimeMillis() + PRESSURE_COOL_MS
+        }
         try {
             exec.execute {
                 if (active.get() == 0) closeNow("内存压力") else {
@@ -416,6 +422,20 @@ object OnnxEngine : TransEngine {
             }
         } catch (t: Throwable) {
             Log.w(TAG, "投递释放任务失败: " + t.message)
+        }
+    }
+
+    /** 是否处于压力释放后的静默期（选择器据此直接走 ML Kit，免得每块都白调度一次）。 */
+    fun isSilenced(): Boolean {
+        val until = noLoadUntil
+        return until > 0L && System.currentTimeMillis() < until
+    }
+
+    /** 回到前台：立刻恢复正常可用（静默期只服务于后台/告急场景）。 */
+    fun clearSilence() {
+        if (noLoadUntil != 0L) {
+            noLoadUntil = 0L
+            Log.d(TAG, "回到前台，解除高精度静默期")
         }
     }
 

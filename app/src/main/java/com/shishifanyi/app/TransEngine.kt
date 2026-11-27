@@ -75,6 +75,9 @@ object Engines {
 
     fun pick(reach: Reach, src: String, tgt: String, text: String): TransEngine {
         if (!reach.onnx) return MlKitEngine
+        // 静默期内直接不给 ONNX：否则每一块都会走一遍 installedNow + 登记 inflight +
+        // 投递任务 + ensureLoaded 抛异常 + 记 WARN，一屏 30 块就是 30 次无用调度
+        if (OnnxEngine.isSilenced()) return MlKitEngine
         val key = EnginePack.pairKey(src, tgt) ?: return MlKitEngine
         if (key !in reach.installed) return MlKitEngine
         // 长段落：无 KV cache 的解码是 O(n²)，几千字符必然超预算，直接交给 ML Kit

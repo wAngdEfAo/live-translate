@@ -164,6 +164,19 @@ App 里的「反馈」卡片可以直接打开这两个入口，并把版本号�
 
 ## 版本历史
 
+### 5.6.0
+- 修 S1：静默期原本由任何一次 `releaseUnderPressure()` 触发，而 `MODERATE/COMPLETE`
+  在切后台时就会送来 —— 用户回到前台后近一分钟所有长句静默走 ML Kit，界面仍显示「高精度」。
+  现在只有 `RUNNING_CRITICAL`（前台真告急）才设静默期；`MainActivity.onResume` 直接
+  `clearSilence()`
+- 修 S2：`Engines.pick` 现在看静默期，静默期间不再为每块走一次
+  `installedNow → inflight → exec → ensureLoaded 抛异常 → WARN`（一屏 30 块白调度）
+- 修 S3：`releaseUnderPressure()` 在没有会话在用时不设静默期（白关一分钟的问题）
+- 修 S4：`totalBytes` 跳过 `.staging-*` / `*.old-*`，崩溃残留不再把存储占用撑大；
+  `sweepOrphans` 去掉年龄门（已与导入同锁），并且**优先把 `.old-*` 恢复成正式目录**——
+  上次在 rename 后崩掉时，那个方向不再丢包
+- 修 S5：`EnginePack.remove()` 纳入同一把锁，导入进行中删除不再让 promote 白跑一次
+
 ### 5.5.9
 - 修「释放后立刻重载」：`releaseUnderPressure()` 置 60 秒 `noLoadUntil`，`ensureLoaded`
   命中就直接报错让调用方回退 ML Kit。之前释放完，队列里下一个任务立刻重新读 146MB，

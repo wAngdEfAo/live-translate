@@ -68,16 +68,27 @@ object EnginePack {
     fun sweepOrphans(ctx: Context) {
         try {
             val dir = packsDir(ctx)
-            val now = System.currentTimeMillis()
             dir.listFiles()?.forEach { f ->
                 if (!f.isDirectory) return@forEach
-                val isOld = f.name.contains(".old-")
-                val isStaging = f.name.startsWith(".staging-")
-                if (!isOld && !isStaging) return@forEach
-                // .old-* 也要年龄门：启动清理线程不能在「刚改名为 .old-X」与「回滚/删除」之间插进来，
-                // 否则会把回滚要用的目录删掉，那个方向就丢包了
-                if (now - f.lastModified() < 30 * 60_000L) return@forEach
-                if (f.deleteRecursively()) Log.d(TAG, "清理残留目录: " + f.name)
+                // 与 importZip 同一把锁：能走到这里说明没有导入在进行，这些都是崩溃残留
+                if (f.name.startsWith(".staging")) {
+                    if (f.deleteRecursively()) Log.d(TAG, "清理残留 staging: " + f.name)
+                    return@forEach
+                }
+                val idx = f.name.indexOf(".old-")
+                if (idx <= 0) return@forEach
+                val key = f.name.substring(0, idx)
+                val dest = pairDir(ctx, key)
+                if (!dest.exists()) {
+                    // 上次替换在「改成 .old」之后崩了：把旧目录挪回去，别让这个方向丢包
+                    if (f.renameTo(dest)) {
+                        Log.d(TAG, "恢复被中断的模型目录: $key")
+                    } else if (f.deleteRecursively()) {
+                        Log.w(TAG, "恢复失败，已清理: " + f.name)
+                    }
+                } else if (f.deleteRecursively()) {
+                    Log.d(TAG, "清理残留目录: " + f.name)
+                }
             }
         } catch (t: Throwable) {
             Log.w(TAG, "清理残留失败: " + t.message)
@@ -110,18 +121,30 @@ object EnginePack {
     fun installed(ctx: Context): List<Pair<String, Long>> {
         val out = ArrayList<Pair<String, Long>>(2)
         for (k in listOf("en_zh", "zh_en")) {
-            if (isInstalled(ctx, k)) out.add(k to dirBytes(pairDir(ctx, k)))
+            if (isInstalled(ctx, k)) out.add(k to dirBytes(pairDir(ctx, k), skipTemp = false))
         }
         return out
     }
 
-    fun totalBytes(ctx: Context): Long = dirBytes(root(ctx))
+    fun totalBytes(ctx: Context): Long = dirBytes(root(ctx), skipTemp = true)
 
-    private fun dirBytes(f: File): Long {
+    /**
+     * @param skipTemp 跳过 `.staging-*` / `*.old-*` 这类中间目录。
+     *   存储页统计必须跳过：崩溃残留的 147MB 会在清理前一直把占用撑大，
+     *   而它既不可用也不该算进"模型占用"。
+     */
+    private fun dirBytes(f: File, skipTemp: Boolean): Long {
         if (!f.exists()) return 0L
         if (f.isFile) return f.length()
         var sum = 0L
-        f.listFiles()?.forEach { sum += dirBytes(it) }
+        f.listFiles()?.forEach {
+            if (skipTemp && it.isDirectory &&
+                (it.name.startsWith(".") || it.name.contains(".old-"))
+            ) {
+                return@forEach
+            }
+            sum += dirBytes(it, skipTemp)
+        }
         return sum
     }
 
@@ -162,6 +185,7 @@ object EnginePack {
     }
 
     /** 删除某个方向（腾出空间）。 */
+    @Synchronized
     fun remove(ctx: Context, key: String): Boolean {
         return try {
             val d = pairDir(ctx, key)

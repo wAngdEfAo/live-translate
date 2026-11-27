@@ -1077,8 +1077,12 @@ class OverlayService : Service() {
         }
         if (hardPressure) {
             // 高精度引擎的会话占着 150MB 以上原生内存，压力下必须真放掉：
-            // release() 在有请求在跑时会推迟，那种情况下等于没释放
-            OnnxEngine.releaseUnderPressure()
+            // release() 在有请求在跑时会推迟，那种情况下等于没释放。
+            // 但只有 RUNNING_CRITICAL（前台运行时真告急）才设静默期：
+            // COMPLETE 多半只是进程进了后台 LRU，用户回前台后应当能立刻重建。
+            OnnxEngine.releaseUnderPressure(
+                urgent = level == android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL
+            )
         }
         if (pressure) {
             Log.d("Overlay", "内存紧张（level=$level），已释放翻译模型")

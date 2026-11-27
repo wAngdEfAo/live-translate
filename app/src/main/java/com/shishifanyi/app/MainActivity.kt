@@ -190,6 +190,9 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        // 回到前台就该恢复高精度：静默期只服务于「后台 LRU 回收 + 前台真告急」这两种场景，
+        // 不是让用户回到前台后近一分钟还在静默降级
+        OnnxEngine.clearSilence()
         refresh()
         // 上次挂着下载：回到前台就接着显示进度，已完成则直接导入
         if (Prefs.engineDlId != EngineDownloader.NO_TASK) {
