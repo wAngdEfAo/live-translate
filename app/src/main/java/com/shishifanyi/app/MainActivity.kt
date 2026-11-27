@@ -196,6 +196,8 @@ class MainActivity : Activity() {
         // 回到前台就该恢复高精度：静默期只服务于「后台 LRU 回收 + 前台真告急」这两种场景，
         // 不是让用户回到前台后近一分钟还在静默降级
         OnnxEngine.clearSilence()
+        // 兜底：万一将来某条路径不回调，测速按钮也不会被锁死
+        testBusy = false
         refresh()
         // 上次挂着下载：回到前台就接着显示进度，已完成则直接导入
         if (Prefs.engineDlId != EngineDownloader.NO_TASK) {
@@ -368,6 +370,7 @@ class MainActivity : Activity() {
         secAppearDesc = null
         secAboutDesc = null
         transSummaryBase = ""
+        testBusy = false
         langRowBusy = false
     }
 
@@ -1346,14 +1349,19 @@ class MainActivity : Activity() {
         onnxTestOut?.text = "翻译中…"
         val loadedBefore = OnnxEngine.isLoaded()
         val clickedAt = System.currentTimeMillis()
-        var startedAt = 0L
+        val beginAt = longArrayOf(0L)      // 任务开始执行
+        val loadedAt = longArrayOf(0L)     // 会话就绪（含可能的加载）
+        val decodeAt = longArrayOf(0L)     // 进入 greedy
         OnnxEngine.translateFresh(src, tgt, input, { err, out ->
+            // 时间戳必须在执行器线程取：投到主线程再取会把投递延迟算进解码耗时
+            // （主线程忙时几十毫秒，对短句就是百分之十几的误差）
+            val endAt = System.currentTimeMillis()
             runOnUiThread {
                 testBusy = false
-                val endAt = System.currentTimeMillis()
-                val queued = if (startedAt > 0L) startedAt - clickedAt else 0L
+                val queued = if (beginAt[0] > 0L) beginAt[0] - clickedAt else 0L
+                val load = if (loadedAt[0] > 0L && beginAt[0] > 0L) loadedAt[0] - beginAt[0] else 0L
                 // 只把「解码」记进样本：排队与首次加载都会把数字放大
-                val decode = if (startedAt > 0L) endAt - startedAt else endAt - clickedAt
+                val decode = if (decodeAt[0] > 0L) endAt - decodeAt[0] else endAt - clickedAt
                 if (err == null) Latency.record(key, decode, input.length)
                 val n = Latency.count(key)
                 val p50 = Latency.median(key)
@@ -1361,10 +1369,12 @@ class MainActivity : Activity() {
                 onnxTestOut?.text = if (err != null) {
                     err
                 } else {
+                    val spans = StringBuilder()
+                    spans.append("排队 ").append(queued).append("ms")
+                    if (load > 0L) spans.append(" + 加载 ").append(load).append("ms")
+                    spans.append(" + 解码 ").append(decode).append("ms")
                     "→ " + out +
-                        "\n排队 " + queued + "ms + 解码 " + decode + "ms" +
-                        (if (!loadedBefore) "（含加载模型）" else "") +
-                        "；输入 " + input.length + " 字符" +
+                        "\n" + spans + "；输入 " + input.length + " 字符" +
                         "\n" + pairName(key) + " 近 " + n + " 次解码：中位数 " + p50 + "ms" +
                         "（min " + Latency.min(key) + " / max " + Latency.max(key) + "）" +
                         (if (p50 > 3000L) {
@@ -1375,7 +1385,14 @@ class MainActivity : Activity() {
                         "\n（每次都是真解码；中位数只算解码时间）"
                 }
             }
-        }, { startedAt = System.currentTimeMillis() })
+        }) { stage ->
+            val now = System.currentTimeMillis()
+            when (stage) {
+                "begin" -> beginAt[0] = now
+                "loaded" -> loadedAt[0] = now
+                "decode" -> decodeAt[0] = now
+            }
+        }
     }
 
     /** 主题选择：浅色 / 深色 / 跟随系统。改完重建 Activity（颜色是资源，不会自动重绘）。 */

@@ -142,17 +142,20 @@ object OnnxEngine : TransEngine {
      * 「精翻这段」必须走它 —— 否则同一句连点十次，第 2 次起全是缓存命中（几毫秒），
      * 中位数被几毫秒填满，量出来的"很快"与真实解码耗时的结论正好相反。
      *
-     * @param onStart 任务真正开始解码时回调（等加载完、就在 greedy 之前）。
-     *   执行器是单线程的，界面上"连点"会把任务排成阶梯；调用方靠这个回调区分
-     *   「排队时间」与「解码时间」，中位数只该取后者。
+     * @param onStage 分阶段回调，全部在**执行器线程**上触发，值为 "begin" / "loaded" / "decode"。
+     *   "begin"：任务真正开始执行（此前的都是排队）；
+     *   "loaded"：会话就绪（此前若发生加载，146MB 读盘算在这段）；
+     *   "decode"：马上进入 greedy。
+     *   调用方靠它把「排队 / 加载 / 解码」拆开 —— 执行器是单线程的，
+     *   界面上"连点"会把任务排成阶梯，中位数只该取解码那一段。
      */
     fun translateFresh(
         src: String,
         tgt: String,
         text: String,
         cb: (err: String?, out: String) -> Unit,
-        onStart: (() -> Unit)? = null
-    ) = doTranslate(src, tgt, text, cb, useCache = false, onStart = onStart)
+        onStage: ((String) -> Unit)? = null
+    ) = doTranslate(src, tgt, text, cb, useCache = false, onStage = onStage)
 
     /** 会话当前是否已加载（用来区分「含首次加载模型」的样本）。 */
     fun isLoaded(): Boolean = loadedKey != null && enc != null && dec != null
@@ -163,7 +166,7 @@ object OnnxEngine : TransEngine {
         text: String,
         cb: (err: String?, out: String) -> Unit,
         useCache: Boolean,
-        onStart: (() -> Unit)? = null
+        onStage: ((String) -> Unit)? = null
     ) {
         if (text.isBlank()) {
             cb(null, "")
@@ -215,10 +218,13 @@ object OnnxEngine : TransEngine {
         exec.execute {
             var err: String? = null
             var out = ""
+            // 任务真正开始执行：此前的都算排队
+            onStage?.invoke("begin")
             try {
                 val loaded = ensureLoaded(ctx, pair)
-                // 真正开始解码的点：之前的排队与加载都不算进"单句解码耗时"
-                onStart?.invoke()
+                // 会话就绪：若这一段里发生了 146MB 加载，算"加载"而不是"排队"
+                onStage?.invoke("loaded")
+                onStage?.invoke("decode")
                 out = greedy(loaded.first, loaded.second.first, loaded.second.second, text)
                 // 旁路测量（translateFresh）不写缓存：否则下一轮同样的句子又变成缓存命中
                 if (useCache && out.isNotBlank()) remember(key, out)
