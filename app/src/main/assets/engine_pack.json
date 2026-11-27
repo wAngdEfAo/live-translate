@@ -7,5 +7,5 @@
     "https://github.com/wAngdEfAo/live-translate/releases/download/v5.6.0/live-translate-engine-opus-mt-int8.zip",
     "https://github.com/wAngdEfAo/live-translate/releases/download/v5.4.1/live-translate-engine-opus-mt-int8.zip"
   ],
-  "note": "OPUS-MT Marian int8, en<->zh。App 只用第一个地址；第一个失效时可在 App 里长按「下载模型包」复制，自行下载后点「导入 zip」。两个地址指向同一份文件（sha256 相同）。"
+  "note": "OPUS-MT Marian int8, en<->zh. App uses the first URL only; if it dies, long-press the download button to copy the URL, fetch it in a browser, then use Import zip. Both URLs serve the same file (same sha256). NOTE: keep this file pure ASCII/UTF-8 - it was once corrupted by a GB2312 writer."
 }

@@ -164,6 +164,18 @@ App 里的「反馈」卡片可以直接打开这两个入口，并把版本号�
 
 ## 版本历史
 
+### 5.6.2
+- R1：`ensureLoaded` 入口先查 `releasePending`，命中就直接报错、**不读盘**。
+  5.6.1 的早退条件（`!hadSession && active==0`）覆盖不到「任务正卡在 ensureLoaded、
+  `loadedKey` 还没赋值、但 `active` 已经 +1」这个窗口，那次 146MB 读了还是白读
+- R2：`remove()` 把「删文件」与「会话/缓存失效」解耦：只要目标目录真删了，就
+  `OnnxEngine.forget(key)` + `invalidateInstalled()` + `clearManifestCache()`；
+  残留 `.old-*` 删不掉不再连累它们（否则目标已删、引擎还握着指向那些文件的会话）
+- R3：新增 `OnnxEngine.invalidateInstalled()`，导入成功与删除后立刻失效已装方向缓存，
+  不再靠 5 秒 TTL 兜（删完 5 秒内还可能被选中、到 ensureLoaded 才发现文件没了）
+- R4：`assets/engine_pack.json` 的 `note` 改为纯 ASCII（该文件曾被按 GB2312 写入变成乱码，
+  不值得为一个仅供人读的字段留编码风险）
+
 ### 5.6.1
 - Q1：`remove()` 同时清 `packs/<key>.old-*`。否则「删除」看着成功（dest 不存在即返回 true），
   下次启动 `sweepOrphans` 又把 `.old-X` 挪回来，模型复活

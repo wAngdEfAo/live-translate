@@ -98,6 +98,12 @@ object OnnxEngine : TransEngine {
     @Volatile
     private var installedPairs: Set<String> = emptySet()
 
+    /** 导入/删除后立刻让已装方向的缓存失效，不必等 5 秒 TTL。 */
+    fun invalidateInstalled() {
+        installedValid = false
+        installedAt = 0L
+    }
+
     private fun installedNow(ctx: Context): Set<String> {
         val now = System.currentTimeMillis()
         val cached = installedPairs
@@ -216,6 +222,12 @@ object OnnxEngine : TransEngine {
         ctx: Context,
         pair: String
     ): Pair<MarianTokenizer, Pair<OrtSession, OrtSession>> {
+        // 内存压力已经要求释放：这里必须先拦住，不能先去读 146MB 再"在第一步中止"。
+        // 位置要放在会话快照之前 —— 即使当前会话正好匹配，马上也要被关掉，
+        // 返回它只会让调用方拿着一个即将消失的会话去推理。
+        if (releasePending) {
+            throw IllegalStateException("内存压力释放中，暂不加载模型")
+        }
         if (loadedKey == pair) {
             val t = tokenizer
             val e = enc

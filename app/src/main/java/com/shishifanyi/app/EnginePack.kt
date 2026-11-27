@@ -196,24 +196,28 @@ object EnginePack {
         return try {
             val d = pairDir(ctx, key)
             val hadDest = d.exists()
-            var ok = !hadDest || d.deleteRecursively()
+            val destGone = !hadDest || d.deleteRecursively()
             // 同时删掉中断替换留下的 <key>.old-*：否则这里看着"删掉了"（dest 不存在 → 返回 true），
             // 下次启动 sweepOrphans 又把 .old-X 挪回 packs/<key>，模型复活。
+            var strayGone = true
             try {
                 packsDir(ctx).listFiles()?.forEach { f ->
                     if (f.isDirectory && f.name.startsWith("$key.old-")) {
-                        if (!f.deleteRecursively()) ok = false
+                        if (!f.deleteRecursively()) strayGone = false
                     }
                 }
             } catch (t: Throwable) {
                 Log.w(TAG, "清理 $key 的残留目录失败: " + t.message)
-                ok = false
+                strayGone = false
             }
-            if (ok) {
+            // 会话与缓存失效只看「目标目录是否真的没了」：残留目录删不掉不该连累它们，
+            // 否则目标已删、引擎却还握着指向那些文件的会话，manifest 缓存也陈旧
+            if (destGone) {
                 OnnxEngine.forget(key)
+                OnnxEngine.invalidateInstalled()
                 clearManifestCache()
             }
-            ok
+            destGone && strayGone
         } catch (t: Throwable) {
             Log.w(TAG, "删除失败: " + t.message)
             false
@@ -373,6 +377,7 @@ object EnginePack {
             }
             clearManifestCache()
             OnnxEngine.forgetAll()
+            OnnxEngine.invalidateInstalled()
             val total = installed(ctx)
             val names = total.joinToString("、") { pairName(it.first) + " " + mb(it.second) }
             return true to "导入完成：$names" + if (skipped > 0) "（跳过 $skipped 个无关条目）" else ""
