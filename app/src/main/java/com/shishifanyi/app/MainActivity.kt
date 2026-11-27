@@ -365,7 +365,7 @@ class MainActivity : Activity() {
         val tgt = Prefs.tgtLang
         if (code == "auto") {
             Prefs.srcLang = "auto"
-            LanguagePack.clearReady()
+            LanguagePack.clearReady(Prefs.srcLang, Prefs.tgtLang)
             AppCore.resetDedupe()
             refreshLangRows()
             refresh()
@@ -379,7 +379,7 @@ class MainActivity : Activity() {
                     return@runOnUiThread
                 }
                 Prefs.srcLang = code
-                LanguagePack.clearReady()
+                LanguagePack.clearReady(Prefs.srcLang, Prefs.tgtLang)
                 AppCore.resetDedupe()
                 refreshLangRows()
                 refresh()
@@ -403,7 +403,7 @@ class MainActivity : Activity() {
     private fun switchTarget(code: String) {
         if (Prefs.tgtLang == code) return
         Prefs.tgtLang = code
-        LanguagePack.clearReady()
+        LanguagePack.clearReady(Prefs.srcLang, Prefs.tgtLang)
         AppCore.resetDedupe()
         if (Prefs.srcLang == code) {
             Prefs.srcLang =
@@ -445,7 +445,7 @@ class MainActivity : Activity() {
                         // 只有下载成功才切源语言；失败就留在原语言
                         if (ok) {
                             Prefs.srcLang = code
-                            LanguagePack.clearReady()
+                            LanguagePack.clearReady(Prefs.srcLang, Prefs.tgtLang)
                             AppCore.resetDedupe()
                         }
                         refreshLangRows()
@@ -1171,6 +1171,7 @@ class MainActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQ_OCR && resultCode == RESULT_OK && data != null) {
             OcrService.setPermission(data)
+            Prefs.ocrEverGranted = true
             OcrService.start(this)
             return
         }
@@ -1214,6 +1215,8 @@ class MainActivity : Activity() {
     /** OCR 开关打开但授权已失效（服务被回收 / token 用掉）时，明确提示一次。 */
     private fun hintOcrReauthIfNeeded() {
         if (!Prefs.ocrFallback) return
+        // 从未授权过的新用户不该看到"授权已失效"
+        if (!Prefs.ocrEverGranted) return
         if (OcrService.hasPermission() || OcrService.isRunning()) return
         if (ocrHintShown) return
         ocrHintShown = true

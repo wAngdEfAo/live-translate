@@ -97,32 +97,41 @@ object ModelRegistry {
         return try {
             ctx.assets.open("translate_models_metadata.json").use { ins ->
                 val json = JSONObject(ins.bufferedReader().readText())
-                var best: Pair<String, Long>? = null   // hash to DL_SZ
-                var bestDiff = Long.MAX_VALUE
-
+                // 收集两档候选：DL_SZ 是**压缩包**体积，本地是**解压后**目录体积，
+                // 天然不相等（解压通常更大）。因此先按比例容差筛选，再取最接近的一档。
+                data class Cand(val hash: String, val dl: Long, val pkg: String)
+                val cands = ArrayList<Cand>()
                 for (pkg in PKG_ORDER) {
                     val group = json.optJSONObject(pkg) ?: continue
                     val entry = group.optJSONObject(langPair) ?: continue
                     val h = entry.optString("HASH", "")
                     if (h.isEmpty()) continue
-                    val dl = entry.optLong("DL_SZ", 0L)
-                    if (localBytes <= 0L) {
-                        Log.d(TAG, "officialHash($langPair) 无体积信息，取自 $pkg")
-                        return h
-                    }
-                    val diff = kotlin.math.abs(dl - localBytes)
-                    if (diff < bestDiff) {
-                        bestDiff = diff
-                        best = h to dl
-                    }
+                    cands.add(Cand(h, entry.optLong("DL_SZ", 0L), pkg))
                 }
-                if (best == null) return null
+                if (cands.isEmpty()) return null
+                if (localBytes <= 0L) {
+                    Log.d(TAG, "officialHash($langPair) 无体积信息，取 " + cands.first().pkg)
+                    return cands.first().hash
+                }
+
                 Log.d(
                     TAG,
-                    "officialHash($langPair) 本地 " + localBytes + "B 匹配 DL_SZ=" + best.second +
-                        "B（差 " + bestDiff + "B）"
+                    "officialHash($langPair) 本地解压 " + localBytes + "B，候选：" +
+                        cands.joinToString("；") { it.pkg + "=" + it.dl + "B" }
                 )
-                best.first
+
+                // 解压体积一般落在压缩体积的 0.5x ~ 2.5x 区间内
+                val inRange = cands.filter {
+                    localBytes >= (it.dl * 0.5).toLong() && localBytes <= (it.dl * 2.5).toLong()
+                }
+                val pool = if (inRange.isNotEmpty()) inRange else cands
+                val best = pool.minByOrNull { kotlin.math.abs(it.dl - localBytes) } ?: return null
+                Log.d(
+                    TAG,
+                    "officialHash($langPair) 选定 " + best.pkg + "（DL_SZ=" + best.dl + "B，差 " +
+                        kotlin.math.abs(best.dl - localBytes) + "B）"
+                )
+                best.hash
             }
         } catch (t: Throwable) {
             Log.w(TAG, "读官方索引失败: " + t.message)

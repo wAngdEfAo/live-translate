@@ -113,7 +113,6 @@ object TextPipeline {
     private fun hasTelugu(s: String) = s.any { it in '\u0c00'..'\u0c7f' }
     private fun hasKannada(s: String) = s.any { it in '\u0c80'..'\u0cff' }
     private fun hasGeorgian(s: String) = s.any { it in '\u10a0'..'\u10ff' }
-    private fun hasArmenian(s: String) = s.any { it in '\u0530'..'\u058f' }
 
     /**
      * 该行是否属于当前源语言。

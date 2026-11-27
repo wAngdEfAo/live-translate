@@ -42,6 +42,11 @@ object Prefs {
         get() = p.getBoolean("accurate_mode", false)
         set(v) = p.edit().putBoolean("accurate_mode", v).apply()
 
+    /** 是否曾经成功授权过屏幕捕获；用于区分"从未授权"和"授权失效"。 */
+    var ocrEverGranted: Boolean
+        get() = p.getBoolean("ocr_ever_granted", false)
+        set(v) = p.edit().putBoolean("ocr_ever_granted", v).apply()
+
     var ocrFallback: Boolean
         get() = p.getBoolean("ocr", true)
         set(v) = p.edit().putBoolean("ocr", v).apply()

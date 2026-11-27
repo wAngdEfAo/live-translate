@@ -35,6 +35,9 @@ class OcrService : Service() {
         private const val TAG = "LiveTranslate"
         private const val CH_ID = "live_translate_ocr"
 
+        /** 识别用最大宽度；超过则降采样，行框按比例还原到屏幕像素。 */
+        private const val OCR_MAX_WIDTH = 1080
+
         @Volatile
         var pendingData: Intent? = null
             private set
@@ -147,11 +150,12 @@ class OcrService : Service() {
     private fun setup(data: Intent) {
         try {
             val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            val p = mpm.getMediaProjection(Activity.RESULT_OK, data) ?: return
-            // token 从 Android 14 起是一次性的：用掉即作废。
-            // 不清空的话，下次启动会拿同一个 Intent 再调 getMediaProjection，必然抛
-            // SecurityException；而 hasPermission() 还一直返回 true，用户看到"有权限"却永远识别不了。
+            // token 是一次性的：先作废再取，取失败也不会留下"有权限"的假象
             setPermission(null)
+            val p = mpm.getMediaProjection(Activity.RESULT_OK, data) ?: run {
+                Log.w(TAG, "getMediaProjection 返回空，token 已作废")
+                return
+            }
             if (Build.VERSION.SDK_INT >= 34) p.registerCallback(projectionCallback, main)
             projection = p
 
@@ -248,11 +252,32 @@ class OcrService : Service() {
             return
         }
         releaseSurface()   // 帧已拿到，立刻停止镜像
-        keepSmall(bmp)
-        recognizer.process(InputImage.fromBitmap(bmp, 0))
+
+        // 全分辨率 1440x3200 的 ARGB 约 18MB，识别前降到宽 ≤1080 可显著降低内存抖动
+        val ocrBmp: android.graphics.Bitmap
+        val scale: Float
+        if (bmp.width > OCR_MAX_WIDTH) {
+            scale = OCR_MAX_WIDTH.toFloat() / bmp.width
+            ocrBmp = android.graphics.Bitmap.createScaledBitmap(
+                bmp,
+                OCR_MAX_WIDTH,
+                (bmp.height * scale).toInt().coerceAtLeast(1),
+                true
+            )
+            try {
+                bmp.recycle()
+            } catch (ex: Throwable) {
+                Log.w(TAG, "OcrService@249: " + ex.message)
+            }
+        } else {
+            scale = 1f
+            ocrBmp = bmp
+        }
+        keepSmall(ocrBmp)
+        recognizer.process(InputImage.fromBitmap(ocrBmp, 0))
             .addOnSuccessListener { result ->
                 try {
-                    bmp.recycle()
+                    ocrBmp.recycle()
                 } catch (ex: Throwable) {
                     Log.w(TAG, "OcrService@244: " + ex.message)
                 }
@@ -260,7 +285,14 @@ class OcrService : Service() {
                 for (tb in result.textBlocks) {
                     for (line in tb.lines) {
                         val box = line.boundingBox ?: continue
-                        out.add(TextBlock(line.text, Rect(box)))
+                        // 坐标还原到屏幕像素：识别用的是缩小图
+                        val r = if (scale == 1f) Rect(box) else Rect(
+                            (box.left / scale).toInt(),
+                            (box.top / scale).toInt(),
+                            (box.right / scale).toInt(),
+                            (box.bottom / scale).toInt()
+                        )
+                        out.add(TextBlock(line.text, r))
                     }
                 }
                 cb(out)

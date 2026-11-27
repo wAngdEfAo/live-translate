@@ -191,24 +191,28 @@ object AppCore {
      * 后面的块直接被 break 掉。改成一次性并发提交 + 总预算等待 + 结果缓存。
      */
     private fun detectBatch(texts: List<String>, budgetMs: Long): Map<String, String?> {
-        val result = HashMap<String, String?>(texts.size * 2)
+        // 用并发容器：await 超时返回后回调可能仍在写，普通 HashMap 跨线程读写不安全
+        val result = java.util.concurrent.ConcurrentHashMap<String, String?>()
         val pending = ArrayList<String>(texts.size)
         for (t in texts) {
             val (has, lang) = cachedLang(t)
             if (has) result[t] = lang else pending.add(t)
         }
-        if (pending.isEmpty()) return result
+        if (pending.isEmpty()) return HashMap(result)
 
         val latch = CountDownLatch(pending.size)
         for (t in pending) {
             LanguageDetector.detectStrict(t) { lang ->
-                synchronized(result) { result[t] = lang }
-                if (lang != null) rememberLang(t, lang)
+                if (lang != null) {
+                    result[t] = lang
+                    rememberLang(t, lang)
+                }
                 latch.countDown()
             }
         }
         latch.await(budgetMs, TimeUnit.MILLISECONDS)
-        return result
+        // 返回快照，调用方拿到的是稳定副本
+        return HashMap(result)
     }
 
     private fun useOcr(): Boolean = Prefs.ocrFallback && OcrBridge.available()
