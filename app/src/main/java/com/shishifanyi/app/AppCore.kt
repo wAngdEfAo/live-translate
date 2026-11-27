@@ -170,9 +170,7 @@ object AppCore {
         return true
     }
 
-    private const val LANG_UND = "und"
-
-    /** 目标语言判定结果缓存：句 → 语言码；用 "und" 表示"识别不出"，避免存 null。 */
+    /** 目标语言判定结果缓存：句 → 语言码（只存成功结果，失败不入缓存） */
     private val detectCache = object : LinkedHashMap<String, String>(64, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean =
             size > 256
@@ -181,12 +179,12 @@ object AppCore {
     @Synchronized
     private fun cachedLang(text: String): Pair<Boolean, String?> {
         val v = detectCache[text] ?: return false to null
-        return true to if (v == LANG_UND) null else v
+        return true to v
     }
 
     @Synchronized
-    private fun rememberLang(text: String, lang: String?) {
-        detectCache[text] = lang ?: LANG_UND
+    private fun rememberLang(text: String, lang: String) {
+        detectCache[text] = lang
     }
 
     /**
