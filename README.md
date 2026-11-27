@@ -164,6 +164,27 @@ App 里的「反馈」卡片可以直接打开这两个入口，并把版本号�
 
 ## 版本历史
 
+### 5.5.6
+- 修「仅 Wi-Fi 下载」在非 Wi-Fi 下**误删已下载进度**：`lastDlBytes` 存进偏好，
+  且要求「本次会话内确实观察到增长」才判定，recreate/旋转/回前台不再把首帧当成增长
+  而 cancel（`DownloadManager.remove()` 会连带删掉已下载数据）
+- 显式声明 `ACCESS_NETWORK_STATE`（之前靠 `mlkit:translate` 的 manifest 合并进来，太脆）
+- 修「截断后无限重跑」：partial 记 `#part:N` 并退避（第 1 次 1.2 秒、连续两次起 5 秒），
+  不再以 300–600ms 的节奏反复灌爆 ONNX 队列
+- 修 `releaseUnderPressure()` 在推理进行中从主线程关会话（ORT 的 close/run 无并发保证，
+  可能 use-after-free 崩溃）：改为置标记，等推理线程自己退出后再关
+- 修 `ensureLoaded` 在 decoder 建会话失败时漏掉已建的 encoder（每次重试漏 53MB 原生内存）
+- 修下载状态机无终止态：导入失败/任务消失时清 `engineDlId`，不再每次回前台重跑一遍
+  294MB 的 sha256
+- 下载前若本地已有完整文件，直接复用并导入，不再删掉重下
+- WebView 类界面「拿不到根节点」不再计入退避，避免 5 秒才抓一帧
+- 安全窗口判定改为「中间 80% 区域纯色 **且** OCR 读不出东西」，不再误判纯白空白页
+- 首页状态摘要里的 `EnginePack.installed()` 移到后台线程，不再在 onResume 同步做磁盘 IO
+- 子页状态与自测输入在 recreate/旋转后恢复，不再被踢回首页
+- 引擎判定改为整屏一次快照（`Engines.reach()`），逐块只做内存判断
+- `MarianTokenizer` 的 `decoder_start` 缺省值改为按 `pad` 推导（不再硬编码 65000）
+- ONNX 去重表加 32 条上限，避免滚动时无限增长
+
 ### 5.5.5
 - 修「开着仅 Wi-Fi，高精度模型包仍走流量」：不再依赖系统的「计费网络」标记
   （运营商 APN 常被标成 NOT_METERED，DownloadManager 就不拦了），改成看当前是否有

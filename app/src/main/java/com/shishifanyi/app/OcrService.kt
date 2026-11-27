@@ -319,17 +319,10 @@ class OcrService : Service() {
         }
         val useBmp = ocrBmp ?: bmp
         keepSmall(useBmp, scale)
-        // 安全窗口（FLAG_SECURE）截出来是一整片纯色：识别不出字，也不必白跑一次 OCR
-        if (looksBlank(useBmp)) {
-            OcrBridge.markSecureFrame()
-            try {
-                useBmp.recycle()
-            } catch (ex: Throwable) {
-                Log.w(TAG, "OcrService@blank: " + ex.message)
-            }
-            cb(emptyList())
-            return
-        }
+        // 安全窗口（FLAG_SECURE）只把**应用内容**涂黑，状态栏/导航栏仍会正常出现在截图里，
+        // 所以不能"整帧纯色"就判定，否则真实的安全窗口识别不出来，
+        // 反而纯白/纯色空白页会误报。这里只采样中间区域，并且要 OCR 也读不出东西才算数。
+        val blank = looksBlank(useBmp)
         recognizerOrCreate().process(InputImage.fromBitmap(useBmp, 0))
             .addOnSuccessListener { result ->
                 try {
@@ -351,6 +344,7 @@ class OcrService : Service() {
                         out.add(TextBlock(line.text, r))
                     }
                 }
+                if (out.isEmpty() && blank) OcrBridge.markSecureFrame()
                 cb(out)
             }
             .addOnFailureListener { e ->
@@ -451,19 +445,23 @@ class OcrService : Service() {
     }
 
     /**
-     * 采样判断整帧是不是「一片纯色」。安全窗口截出来就是纯黑/纯白，
-     * 与其送进 OCR 白跑一趟，不如直接判定为不可识别并告诉上层。
+     * 采样判断内容区域是不是「一片纯色」。只取中间 80%，避开状态栏与导航栏 ——
+     * FLAG_SECURE 只涂黑应用内容，系统栏照常可见，按整帧判断会永远判不出来。
      */
     private fun looksBlank(bmp: android.graphics.Bitmap): Boolean {
         return try {
-            val stepX = (bmp.width / 16).coerceAtLeast(1)
-            val stepY = (bmp.height / 16).coerceAtLeast(1)
+            val x0 = (bmp.width * 0.1f).toInt()
+            val x1 = (bmp.width * 0.9f).toInt().coerceAtMost(bmp.width - 1)
+            val y0 = (bmp.height * 0.1f).toInt()
+            val y1 = (bmp.height * 0.9f).toInt().coerceAtMost(bmp.height - 1)
+            val stepX = ((x1 - x0) / 16).coerceAtLeast(1)
+            val stepY = ((y1 - y0) / 16).coerceAtLeast(1)
             var min = 255
             var max = 0
-            var x = 0
-            while (x < bmp.width) {
-                var y = 0
-                while (y < bmp.height) {
+            var x = x0
+            while (x <= x1) {
+                var y = y0
+                while (y <= y1) {
                     val c = bmp.getPixel(x, y)
                     val l = (((c shr 16) and 0xFF) + ((c shr 8) and 0xFF) + (c and 0xFF)) / 3
                     if (l < min) min = l

@@ -50,30 +50,36 @@ object Engines {
     const val ENGINE_ONNX = "onnx"
 
     /**
-     * 整屏判一次就够：设置里选了高精度 + 至少装了一个方向的模型。
-     * （以前每块都判，一屏 30 块就是上百次 Prefs 读取 + 文件 stat。）
+     * 整屏一次的判定快照：偏好与"装了哪些模型"在渲染一屏期间不会变，
+     * 逐块去读（每块 3 次文件 stat + 3 次偏好）在一屏 30 块时就是上百次系统调用。
      */
-    fun onnxEnabled(): Boolean {
-        if (Prefs.engine != ENGINE_ONNX) return false
-        return OnnxEngine.isAnyInstalled()
+    class Reach(
+        val onnx: Boolean,
+        val installed: Set<String>,
+        val longOnly: Boolean,
+        val minChars: Int,
+        val maxChars: Int
+    )
+
+    fun reach(ctx: android.content.Context): Reach {
+        val on = Prefs.engine == ENGINE_ONNX
+        val pairs = if (on) EnginePack.installed(ctx).map { it.first }.toSet() else emptySet()
+        return Reach(on, pairs, Prefs.onnxLongOnly, Prefs.onnxMinChars, Prefs.onnxMaxChars)
     }
 
-    /**
-     * 单块选引擎。
-     * @param onnxEnabled 用 [onnxEnabled] 在整屏开头算一次，逐块复用
-     */
-    fun pick(
-        src: String,
-        tgt: String,
-        text: String,
-        onnxEnabled: Boolean = onnxEnabled()
-    ): TransEngine {
-        if (!onnxEnabled) return MlKitEngine
-        if (!OnnxEngine.supports(src, tgt)) return MlKitEngine
-        if (!OnnxEngine.isInstalled(src, tgt)) return MlKitEngine
+    /** 兼容旧调用：没有快照时就地算一次（界面上的自测等低频路径）。 */
+    fun pick(src: String, tgt: String, text: String): TransEngine {
+        val ctx = AppCore.context() ?: return MlKitEngine
+        return pick(reach(ctx), src, tgt, text)
+    }
+
+    fun pick(reach: Reach, src: String, tgt: String, text: String): TransEngine {
+        if (!reach.onnx) return MlKitEngine
+        val key = EnginePack.pairKey(src, tgt) ?: return MlKitEngine
+        if (key !in reach.installed) return MlKitEngine
         // 长段落：无 KV cache 的解码是 O(n²)，几千字符必然超预算，直接交给 ML Kit
-        if (text.length > Prefs.onnxMaxChars) return MlKitEngine
-        if (Prefs.onnxLongOnly && text.length < Prefs.onnxMinChars) return MlKitEngine
+        if (text.length > reach.maxChars) return MlKitEngine
+        if (reach.longOnly && text.length < reach.minChars) return MlKitEngine
         return OnnxEngine
     }
 }

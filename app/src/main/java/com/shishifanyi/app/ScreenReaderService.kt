@@ -103,7 +103,7 @@ class ScreenReaderService : AccessibilityService() {
             if (nullStreak == 1 || nullStreak % 10 == 0) {
                 Log.w(TAG, "拿不到根节点（$nullStreak 次），改走 OCR 兜底")
             }
-            AppCore.onBlocks(emptyList())
+            AppCore.onBlocks(emptyList(), fromNullRoot = true)
             return
         }
         nullStreak = 0
@@ -116,6 +116,7 @@ class ScreenReaderService : AccessibilityService() {
             Log.w(TAG, "节点数超过 $MAX_NODES，本次只处理前 $MAX_NODES 个，靠后的内容可能漏译")
         }
         if (buf.isEmpty()) {
+            // 根节点拿到了但没有文本节点（可能是真的空界面）：走原来的退避逻辑
             AppCore.onBlocks(emptyList())
             return
         }

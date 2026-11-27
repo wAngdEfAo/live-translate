@@ -96,6 +96,15 @@ object Prefs {
         get() = p.getBoolean("engine_wifi_only", true)
         set(v) = p.edit().putBoolean("engine_wifi_only", v).apply()
 
+    /**
+     * 上一次轮询看到的已下载字节。
+     * 存盘是为了让 recreate/旋转/回前台之后仍知道"进度到哪了"，
+     * 否则首帧看到的 downloaded 会被误判成"正在增长"。
+     */
+    var engineDlBytes: Long
+        get() = p.getLong("engine_dl_bytes", 0L)
+        set(v) = p.edit().putLong("engine_dl_bytes", v).apply()
+
     /** 是否曾经成功授权过屏幕捕获；用于区分"从未授权"和"授权失效"。 */
     var ocrEverGranted: Boolean
         get() = p.getBoolean("ocr_ever_granted", false)

@@ -286,6 +286,7 @@ class MarianTokenizer private constructor(
 
 
             val sp = o.getJSONObject("specials")
+            val pad = sp.optInt("pad", 65000)
             return MarianTokenizer(
                 charMap = charMap,
                 protect = protect,
@@ -296,8 +297,10 @@ class MarianTokenizer private constructor(
                 pieceToId = pieceToId,
                 unkId = sp.optInt("unk", 1),
                 eosId = sp.optInt("eos", 0),
-                padId = sp.optInt("pad", 65000),
-                decoderStartId = sp.optInt("decoder_start", 65000),
+                padId = pad,
+                // Marian 用 pad 当解码起始符。包里没写就按 pad 推，而不是硬编码 65000 ——
+                // 换 pad 不同的模型时，硬编码会静默用错起始符。
+                decoderStartId = sp.optInt("decoder_start", pad),
                 nfkcFirst = o.optString("normalize_order", "nfkc_first") == "nfkc_first"
             )
         }

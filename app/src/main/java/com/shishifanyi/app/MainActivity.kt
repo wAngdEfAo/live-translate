@@ -41,6 +41,9 @@ class MainActivity : Activity() {
         private const val SEC_ACCESS = "access"
         private const val SEC_APPEAR = "appear"
 
+        private const val KEY_SECTION = "ui_section"
+        private const val KEY_TEST_TEXT = "ui_test_text"
+
         // 导入 zip 的上限：条目数或解压体积任意一项超限就停止，避免把内部存储写满
         private const val MAX_ENTRY_COUNT = 200
         private const val MAX_TOTAL_BYTES = 256L * 1024 * 1024
@@ -57,6 +60,9 @@ class MainActivity : Activity() {
 
     /** 当前在哪个子页；null = 首页。 */
     private var currentSection: String? = null
+
+    /** onSaveInstanceState 里带过来的自测文本（重建后回填）。 */
+    private var pendingTestText: String? = null
 
     /** 首页四个入口的副标题（显示实时状态）。 */
     private var secTransDesc: TextView? = null
@@ -156,10 +162,28 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         Prefs.init(this)
         AppCore.init(this)
-        setContentView(buildUi())
+        // 切主题会 recreate()、旋转也会重建：把当前所在子页与自测输入恢复回来，
+        // 否则点一下主题就被踢回首页
+        val sec = savedInstanceState?.getString(KEY_SECTION)
+        pendingTestText = savedInstanceState?.getString(KEY_TEST_TEXT)
+        if (sec != null && sec.isNotEmpty()) {
+            currentSection = sec
+            setContentView(buildSection(sec))
+            pendingTestText?.let { t -> onnxTestIn?.setText(t) }
+            refresh()
+        } else {
+            setContentView(buildUi())
+            refresh()
+        }
         installBackHandler()
         applyBarAppearance()
         askNotificationPermission()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        currentSection?.let { outState.putString(KEY_SECTION, it) }
+        onnxTestIn?.text?.toString()?.let { outState.putString(KEY_TEST_TEXT, it) }
     }
 
     override fun onResume() {
@@ -851,26 +875,37 @@ class MainActivity : Activity() {
     /** 上一轮看到的已下载字节，用来判断下载是否真的在跑（而不是被系统暂停）。 */
     private var lastDlBytes = 0L
 
+    /** 本次轮询调度的序号：第一帧不作为"在增长"的证据。 */
+    private var dlPollSeq = 0
+
     private val dlPoll = object : Runnable {
         override fun run() {
             if (!dlPolling) return
             val st = EngineDownloader.status(this@MainActivity)
             if (st != null) {
+                dlPollSeq++
+                val grew = st.downloaded > lastDlBytes
+                if (grew) {
+                    lastDlBytes = st.downloaded
+                    Prefs.engineDlBytes = st.downloaded
+                }
                 // 开着「仅 Wi-Fi」却发现不在 Wi-Fi 上、而且字节数还在涨：
                 // 说明这套系统没按 setAllowedOverMetered 拦（运营商 APN 被标成非计费网络时很常见），
                 // 那就由我们自己停掉，绝不让它继续吃流量。
-                if (Prefs.engineWifiOnly && st.running &&
-                    st.downloaded > lastDlBytes &&
+                // 必须「本次会话内确实观察到增长」才算数：lastDlBytes 从偏好里恢复，
+                // 加上 dlPollSeq >= 2，避免 recreate/回前台的首帧被误判成增长而误删进度。
+                if (Prefs.engineWifiOnly && st.running && grew && dlPollSeq >= 2 &&
                     !EngineDownloader.isOnWifi(this@MainActivity)
                 ) {
                     EngineDownloader.cancel(this@MainActivity)
                     dlPolling = false
                     lastDlBytes = 0L
+                    Prefs.engineDlBytes = 0L
                     engineDlState?.setTextColor(color(R.color.warn))
-                    engineDlState?.text = "已停止：当前不是 Wi-Fi（已开启「仅 Wi-Fi 下载」）。连上 Wi-Fi 后重新点下载。"
+                    engineDlState?.text =
+                        "已停止：当前不是 Wi-Fi（已开启「仅 Wi-Fi 下载」）。已下载的部分会被丢弃，回到 Wi-Fi 请重新点下载。"
                     return
                 }
-                lastDlBytes = st.downloaded
                 engineDlState?.setTextColor(color(if (st.failed != null) R.color.warn else R.color.fg_dim))
                 engineDlState?.text = st.text()
                 if (st.done) {
@@ -915,6 +950,9 @@ class MainActivity : Activity() {
     private fun startDlPolling() {
         if (dlPolling) return
         dlPolling = true
+        // 从偏好恢复上次进度，再开始新序号：这样重进页面不会被当成"增长"
+        lastDlBytes = Prefs.engineDlBytes
+        dlPollSeq = 0
         mainHandler.postDelayed(dlPoll, 300L)
     }
 
@@ -1311,15 +1349,18 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 首页四个入口的副标题：直接把当前状态写出来，点进去之前就能看到。 */
+    /**
+     * 首页四个入口的副标题：直接把当前状态写出来，点进去之前就能看到。
+     * 注意：EnginePack.installed() 会 stat 文件、必要时解析 manifest，
+     * 不能放在主线程的 onResume 路径上（每次回前台都跑一次），所以丢到后台线程再回填。
+     */
     private fun updateSectionSummaries() {
         if (secTransDesc == null && secAccessDesc == null) return
         val tgt = Prefs.tgtLang
         val eng = if (Prefs.engine == Engines.ENGINE_ONNX) "高精度" else "标准"
-        val packs = EnginePack.installed(this).size
+        val translating = Prefs.translating
         secTransDesc?.text = targetName(tgt) + " · 引擎 " + eng +
-            (if (Prefs.engine == Engines.ENGINE_ONNX) "（已装 $packs 个方向）" else "") +
-            (if (Prefs.translating) " · 翻译中" else " · 已暂停")
+            (if (translating) " · 翻译中" else " · 已暂停")
 
         val acc = isAccessibilityOn()
         val ov = Settings.canDrawOverlays(this)
@@ -1329,6 +1370,16 @@ class MainActivity : Activity() {
 
         secAppearDesc?.text = "主题 " + ThemeMode.label(ThemeMode.current(this)) + " · 占用 / 导出 / 反馈"
         secAboutDesc?.text = "版本 " + versionLabel()
+
+        if (Prefs.engine == Engines.ENGINE_ONNX && secTransDesc != null) {
+            val base = secTransDesc?.text?.toString() ?: return
+            Thread {
+                val n = EnginePack.installed(this).size
+                runOnUiThread {
+                    secTransDesc?.text = base + "（已装 $n 个方向）"
+                }
+            }.start()
+        }
     }
 
     /** 主题卡片（外观分组里）。 */

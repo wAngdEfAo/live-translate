@@ -26,6 +26,9 @@ object OnnxEngine : TransEngine {
     private const val TAG = "OnnxEngine"
     private const val MAX_NEW_TOKENS = 96
     private const val CACHE_MAX = 60
+
+    /** 去重表上限：超过就退化为不去重，避免无限增长。 */
+    private const val MAX_INFLIGHT = 32
     private const val IDLE_MS = 180_000L
 
     override val id: String = "onnx"
@@ -55,6 +58,10 @@ object OnnxEngine : TransEngine {
 
     @Volatile
     private var loadedKey: String? = null
+
+    /** 内存压力下请求的「等推理退出后释放」。 */
+    @Volatile
+    private var releasePending = false
 
     private val idleClose = Runnable { release() }
 
@@ -115,14 +122,20 @@ object OnnxEngine : TransEngine {
             cb("高精度模型未安装", "")
             return
         }
-        // 同一句已经在队列里跑：挂到它的回调上，不再压一份任务
+        // 同一句已经在队列里跑：挂到它的回调上，不再压一份任务。
+        // 但表本身要有上限：屏幕滚动时 key 会不断变化，而 AppCore 6 秒后就不再等，
+        // 回调留在表里直到任务跑完；不设上限这张表会一直涨。
+        var registered = false
         synchronized(inflight) {
             val waiters = inflight[key]
             if (waiters != null) {
                 waiters.add(cb)
                 return
             }
-            inflight[key] = mutableListOf(cb)
+            if (inflight.size < MAX_INFLIGHT) {
+                inflight[key] = mutableListOf(cb)
+                registered = true
+            }
         }
         active.incrementAndGet()
         exec.execute {
@@ -137,9 +150,11 @@ object OnnxEngine : TransEngine {
                 err = "高精度翻译失败：" + (t.message ?: "未知错误")
             } finally {
                 active.decrementAndGet()
+                // 推理已经结束（还是在本线程里），此时释放会话才是安全的
+                if (releasePending && active.get() == 0) closeNow("内存压力（延迟）")
                 scheduleIdleClose()
             }
-            val waiters = synchronized(inflight) { inflight.remove(key) }
+            val waiters = if (registered) synchronized(inflight) { inflight.remove(key) } else null
             if (waiters != null) {
                 for (w in waiters) {
                     try {
@@ -189,7 +204,18 @@ object OnnxEngine : TransEngine {
             opts.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
             Log.d(TAG, "加载模型 $pair (threads=$nThreads)")
             se = e.createSession(File(dir, "encoder.onnx").absolutePath, opts)
-            sd = e.createSession(File(dir, "decoder.onnx").absolutePath, opts)
+            try {
+                sd = e.createSession(File(dir, "decoder.onnx").absolutePath, opts)
+            } catch (t: Throwable) {
+                // decoder 建不起来（半截/损坏）时，已经建好的 encoder 会话必须关掉：
+                // 这条路径每次翻译都会重试一次，不关就是每次漏 53MB 原生内存
+                try {
+                    se.close()
+                } catch (t2: Throwable) {
+                    Log.w(TAG, "回滚 encoder 会话失败: " + t2.message)
+                }
+                throw t
+            }
         } finally {
             try {
                 opts.close()
@@ -328,17 +354,31 @@ object OnnxEngine : TransEngine {
     }
 
     /**
-     * 内存压力专用：即使还有请求在跑也立刻掐掉会话。
-     * 那一块会拿到「会话已关闭」的错误，由 AppCore 回退 ML Kit ——
-     * 比在内存最紧张的时候继续攥着 150MB 原生内存要好。
+     * 内存压力专用。
+     *
+     * 不能在推理进行中从别的线程 close 会话：ORT 的 close/run 没有并发保证，
+     * 而 encResult 持有的张量内存属于该会话的 arena —— 更可能是 use-after-free 的原生崩溃
+     * （进程直接死，捕获不到），偏偏又在内存最紧张时触发。
+     * 所以这里只置标记，等推理自然退出后在同一个线程里释放。
      */
     fun releaseUnderPressure() {
+        if (active.get() > 0) {
+            releasePending = true
+            Log.d(TAG, "内存压力：有推理在跑，等它退出后释放")
+            return
+        }
+        closeNow("内存压力")
+    }
+
+    /** 真正关会话；只在确认没有推理在跑时调用（Idle 线程或推理线程自己）。 */
+    private fun closeNow(reason: String) {
         synchronized(this) {
+            releasePending = false
             closeSessions()
             tokenizer = null
             loadedKey = null
         }
-        Log.d(TAG, "内存压力：强制释放 ONNX 会话")
+        Log.d(TAG, "已释放 ONNX 会话（$reason）")
     }
 
     private fun closeSessions() {

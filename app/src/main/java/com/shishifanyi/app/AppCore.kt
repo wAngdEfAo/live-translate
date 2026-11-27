@@ -58,6 +58,10 @@ object AppCore {
     @Volatile
     private var failStreak = 0
 
+    /** 连续几次「预算用完只翻了一部分」；同样要退避，否则会一直卡在前几块。 */
+    @Volatile
+    private var truncStreak = 0
+
     private const val MIN_CAPTURE_GAP = 600L
 
     /** 截断标记：拼在指纹后面，表示「这一屏只处理了一部分」。 */
@@ -137,17 +141,19 @@ object AppCore {
     /**
      * 无障碍读到的一屏文字块。
      * OCR 可用时优先用 OCR 行框（像素级准确），节点矩形只作兜底。
+     * @param fromNullRoot 这次「空」是因为压根拿不到根节点（WebView/微信阅读器），
+     *   而不是内容被判空 —— 后者才该退避，前者退避会让这类界面 5 秒才抓一帧
      */
-    fun onBlocks(blocks: List<TextBlock>) {
+    fun onBlocks(blocks: List<TextBlock>, fromNullRoot: Boolean = false) {
         if (!Prefs.translating) return
         // 悬浮窗没开就没有人消费译文，白翻译只是发热耗电
         if (!OverlayService.isShowing()) return
         // 过滤与按行合并是纯 CPU 活，一屏上千节点时放主线程会直接掉帧；
         // 用单独的单线程串行处理，顺带保证 emptyStreak 这类计数不会并发写坏
-        filterWorker.execute { handleBlocks(blocks) }
+        filterWorker.execute { handleBlocks(blocks, fromNullRoot) }
     }
 
-    private fun handleBlocks(blocks: List<TextBlock>) {
+    private fun handleBlocks(blocks: List<TextBlock>, fromNullRoot: Boolean) {
         val (topY, maxY) = regionBounds()
 
         val now = android.os.SystemClock.elapsedRealtime()
@@ -173,6 +179,17 @@ object AppCore {
         if (filtered.isEmpty()) {
             if (mostlyChinese) {
                 emptyStreak = 0
+                return
+            }
+            if (fromNullRoot) {
+                // 拿不到根节点（微信阅读器 / 内嵌 WebView）：这类界面永远"空"，
+                // 退避会让它 5 秒才抓一帧。只走正常的取词间隔（MIN_CAPTURE_GAP），不累计退避。
+                emptyStreak = 0
+                if (useOcr()) {
+                    captureOcr(topY, maxY)
+                } else {
+                    hintNoSource()
+                }
                 return
             }
             emptyStreak++
@@ -399,8 +416,8 @@ object AppCore {
             // 本轮是否被预算/代次截断：截断时不能把整屏指纹认作「已处理」，
             // 否则没轮到的后半屏要等内容或位置变才会重翻
             var truncated = false
-            // 引擎可用性整屏只判一次，别每块都读 Prefs + stat 模型文件
-            val onnxReady = Engines.onnxEnabled()
+            // 引擎可用性整屏只判一次（含偏好与已装模型），逐块只做纯内存判断
+            val reach = app?.let { Engines.reach(it) }
             for (b in blocks) {
                 if (gen.get() != myGen) {
                     truncated = true
@@ -432,7 +449,8 @@ object AppCore {
                     continue
                 }
                 // 引擎按设置挑：默认 ML Kit；选了高精度且是英⇄中长句时才用 ONNX
-                val engine = Engines.pick(effSrc, tgt, b.text, onnxReady)
+                val engine = if (reach != null) Engines.pick(reach, effSrc, tgt, b.text)
+                else Engines.pick(effSrc, tgt, b.text)
                 val hit = engine.peek(effSrc, tgt, b.text)
                 if (hit != null && hit.isNotBlank()) {
                     pairs.add(Pair(b, hit))
@@ -506,9 +524,19 @@ object AppCore {
                     }
                     failStreak = 0
                     OverlayService.showBlocks(pairs)
-                    // 真的画上去才算这一屏处理过；被截断就只记「部分处理」，
-                    // 让下一次同屏事件接着翻剩下的块（已翻过的块走缓存，很便宜）
-                    lastKey = if (truncated) key + PARTIAL_SUFFIX else key
+                    if (truncated) {
+                        // 只翻译了一部分：不能记成「整屏已处理」，否则后半屏再也不翻；
+                        // 但也不能不设防 —— 否则以 300–600ms 的节奏无限重跑，
+                        // 每轮都翻出前一两块再超时，永远推进不到后面。
+                        truncStreak++
+                        lastKey = key + PARTIAL_SUFFIX + truncStreak
+                        val wait = if (truncStreak >= 2) 5000L else 1200L
+                        backoffUntil = android.os.SystemClock.elapsedRealtime() + wait
+                        Log.d(TAG, "本轮被预算截断（第 $truncStreak 次），退避 ${wait}ms")
+                    } else {
+                        truncStreak = 0
+                        lastKey = key
+                    }
                     val joined = pairs.joinToString("\n") { it.second }
                     OverlayService.pushHistory(joined)
                 } finally {

@@ -264,16 +264,33 @@ object EnginePack {
                 for (n in REQUIRED) if (!File(src, n).isFile) complete = false
                 if (!complete) continue
                 val dest = pairDir(ctx, k)
-                if (dest.exists() && !dest.deleteRecursively()) {
-                    Log.w(TAG, "旧目录删不掉：$k")
+                dest.parentFile?.mkdirs()
+                // 先把旧目录改成 .old 再换新的：直接 delete 之后崩掉/被杀，
+                // 就会出现「这个方向既没有旧的也没有新的」。
+                val old = File(dest.parentFile, k + ".old-" + System.currentTimeMillis())
+                if (dest.exists() && !dest.renameTo(old)) {
+                    Log.w(TAG, "旧目录挪不动，这次不替换：$k")
                     continue
                 }
-                dest.parentFile?.mkdirs()
-                if (!src.renameTo(dest)) {
-                    // 跨设备/异常情况：退回复制
-                    src.copyRecursively(dest, overwrite = true)
-                    src.deleteRecursively()
+                var ok = src.renameTo(dest)
+                if (!ok) {
+                    // 跨设备等情况：此时目标位置是空的（旧目录已改名），复制失败也不会毁掉旧的
+                    ok = try {
+                        src.copyRecursively(dest, overwrite = false)
+                        src.deleteRecursively()
+                        true
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "复制模型目录失败: " + t.message)
+                        false
+                    }
                 }
+                if (!ok) {
+                    // 回滚：清掉半成品，把旧目录挪回来
+                    dest.deleteRecursively()
+                    old.renameTo(dest)
+                    continue
+                }
+                old.deleteRecursively()
                 promoted.add(k)
             }
             if (promoted.isEmpty()) {
