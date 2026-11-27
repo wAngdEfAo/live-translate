@@ -1791,7 +1791,7 @@ class MainActivity : Activity() {
         lp.bottomMargin = dp(12f)
         card.layoutParams = lp
 
-        card.addView(text("4. 一键开启无障碍", 15f, R.color.fg, true))
+        card.addView(text("3. 一键开启无障碍", 15f, R.color.fg, true))
 
         val desc = text(
             "在电脑 cmd 里执行一次下面这行授权，之后本页就能直接开关无障碍，" +
@@ -2214,7 +2214,12 @@ class MainActivity : Activity() {
         if (requestCode == REQ_OCR && resultCode == RESULT_OK && data != null) {
             OcrService.setPermission(data)
             Prefs.ocrEverGranted = true
-            OcrService.start(this)
+            // 只在悬浮窗显示时才启动服务；否则空挂一个前台服务 + 录屏指示器没有意义
+            AppCore.syncOcrService()
+            if (!OverlayService.isShowing()) {
+                toast("已授权。点「显示悬浮窗」后开始截屏识别")
+            }
+            refresh()
             return
         }
         if (resultCode != RESULT_OK || data?.data == null) return
@@ -2268,13 +2273,22 @@ class MainActivity : Activity() {
     }
 
     private fun ensureOcrPermission() {
-        // 没有悬浮窗就没有需要 OCR 的场合，别白挂一个前台服务 + 录屏指示器
-        if (!OverlayService.isShowing()) {
-            toast("先开启悬浮窗，OCR 才会跟着悬浮窗一起工作")
-            return
-        }
+        // 授权与「悬浮窗此刻是否在显示」是两件事：
+        // 录屏授权随时可以给，服务只在悬浮窗显示时才真正启动（见 AppCore.syncOcrService）。
+        // 以前这里先判 isShowing()，于是"权限已给、但还没点显示悬浮窗"的用户
+        // 会被提示「先开启悬浮窗」，看起来像权限没开。
         if (OcrService.hasPermission() || OcrService.isRunning()) {
-            OcrService.start(this)
+            AppCore.syncOcrService()
+            if (!OverlayService.isShowing()) {
+                toast(
+                    if (Settings.canDrawOverlays(this)) {
+                        "已授权。点「显示悬浮窗」后开始截屏识别"
+                    } else {
+                        "已授权。还需要悬浮窗权限，OCR 才会真正开始工作"
+                    }
+                )
+                refresh()
+            }
             return
         }
         try {
@@ -2282,6 +2296,7 @@ class MainActivity : Activity() {
             startActivityForResult(mpm.createScreenCaptureIntent(), REQ_OCR)
         } catch (ex: Throwable) {
             Log.w(TAG, "MainActivity@969: " + ex.message)
+            toast("无法请求截屏权限：" + (ex.message ?: ""))
         }
     }
 

@@ -182,13 +182,26 @@ App 里的「反馈」卡片可以直接打开这两个入口，并把版本号�
 
 ## 版本历史
 
-### 5.6.7
-- 修测速的时间戳口径：`endAt` 原来在 `runOnUiThread {}` 内部取，把回调投递延迟也算进解码
-  （主线程忙时几十毫秒，对短句就是百分之十几的误差）。现在在 cb lambda 第一行取 —— 仍在执行器线程
-- 「排队」与「加载」拆开：`translateFresh` 的 `onStart` 换成 `onStage("begin"/"loaded"/"decode")`，
-  界面显示「排队 Xms + 加载 Yms + 解码 Zms」（没有加载时省略中间项）。
-  原来 `onStart` 在 `ensureLoaded` 之后触发，首次样本的"排队"实际含 146MB 加载
-- `testBusy` 在 `onResume` 与 `clearUiRefs()` 里兜底复位，将来若有路径不回调也不会把按钮锁死
+### 5.6.8
+- 修「悬浮窗权限已开，打开 OCR 仍提示『先开启悬浮窗』」：`ensureOcrPermission()` 原来先判
+  `OverlayService.isShowing()`（悬浮窗**正在显示**），而不是「悬浮窗权限已给」，两者被混为一谈。
+  现在：
+  - 已有录屏授权 → 直接 `syncOcrService()`（服务仍只在悬浮窗显示时启动），
+    若悬浮窗未显示，提示改成「已授权。点『显示悬浮窗』后开始截屏识别」；
+    真的缺悬浮窗权限时提示「已授权。还需要悬浮窗权限…」
+  - 没有录屏授权 → 立刻拉起系统截屏授权，与悬浮窗是否显示无关
+  - `onActivityResult` 里也不再无条件 `OcrService.start()`，改走 `syncOcrService()`，
+    避免空挂一个前台服务 + 录屏指示器
+- 「一键开启无障碍」卡片标题从 `4.` 改成 `3.`（OCR/精准模式那张卡不占编号，序号跳号）
+
+### 5.6.7（正式版 · 2026-11-28 发布）
+- 测速时间戳口径：`endAt` 移到执行器线程取（原来在 `runOnUiThread {}` 内，把回调投递延迟也
+  算进解码）；`onStage("begin"/"loaded"/"decode")` 拆开排队与加载；`testBusy` 兜底复位
+- **本版已作为正式版发布**（上一个正式版是 v5.3.7，跨度含 v5.5.0–v5.6.7 全部改动），
+  GitHub `latest` 指向本 tag
+- 待办：下次出包时把 `assets/engine_pack.json` 的下载地址改成
+  `releases/latest/download/<文件名>` —— 现在仍指向 `v5.6.0` 这个固定 tag，
+  虽然资产逐字节相同，但 `latest` 形式不会因为清理旧 release 而失效
 
 ### 5.6.6
 - **A：连点会在单线程队列上排成阶梯**（第 2 次≈2D…第 7 次≈7D，去最大值取中位数≈4D），
