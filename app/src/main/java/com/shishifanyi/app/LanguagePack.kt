@@ -102,18 +102,10 @@ object LanguagePack {
     fun clientFor(src: String, tgt: String): com.google.mlkit.nl.translate.Translator {
         val k = key(src, tgt)
         // computeIfAbsent 保证并发下只创建一个 client，不会出现两个线程各建一个
-        // 只保留一个语言对：切换语言时把其它客户端关掉，避免模型叠加常驻
-        if (!clients.containsKey(k)) {
-            try {
-                val it = clients.values.iterator()
-                while (it.hasNext()) {
-                    it.next().close()
-                    it.remove()
-                }
-            } catch (ex: Throwable) {
-                Log.w(TAG, "关闭旧语言对失败: " + ex.message)
-            }
-        }
+        // 注意：这里不能"只保留一个语言对"。
+        // 两跳翻译（如 日→英→中）会在同一批里交替请求两个语言对，
+        // 一旦互相 close，每块都要重建客户端、重载模型，整屏必然超时。
+        // 内存交给 IDLE_MS 空闲统一释放。
         val c = clients.computeIfAbsent(k) {
             Translation.getClient(
                 TranslatorOptions.Builder()

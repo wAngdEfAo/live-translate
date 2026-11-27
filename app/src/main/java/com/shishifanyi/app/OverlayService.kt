@@ -949,9 +949,14 @@ class OverlayService : Service() {
 
     // ---------- 生命周期 ----------
 
+    @Suppress("DEPRECATION")
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
+        // UI_HIDDEN 是"切到后台"，不代表内存紧张，不能据此清模型。
+        // 只在 RUNNING_CRITICAL 及以上（真正的内存压力）才释放。
+        val pressure = level != android.content.ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN &&
+            level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL
+        if (pressure) {
             LanguagePack.releaseAll()
             Log.d("Overlay", "内存紧张，已释放翻译模型")
         }

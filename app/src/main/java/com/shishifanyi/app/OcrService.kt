@@ -306,12 +306,10 @@ class OcrService : Service() {
         }
         val useBmp = ocrBmp ?: bmp
         keepSmall(useBmp, scale)
-        // 若缩略图直接引用了 useBmp，回调里就不能回收它
-        val sharedWithSmall = smallFrame === useBmp
         recognizerOrCreate().process(InputImage.fromBitmap(useBmp, 0))
             .addOnSuccessListener { result ->
                 try {
-                    if (!sharedWithSmall) useBmp.recycle()
+                    useBmp.recycle()
                 } catch (ex: Throwable) {
                     Log.w(TAG, "OcrService@244: " + ex.message)
                 }
@@ -333,7 +331,7 @@ class OcrService : Service() {
             }
             .addOnFailureListener { e ->
                 try {
-                    if (!sharedWithSmall) useBmp.recycle()
+                    useBmp.recycle()
                 } catch (ex: Throwable) {
                     Log.w(TAG, "OcrService@258: " + ex.message)
                 }
@@ -363,10 +361,6 @@ class OcrService : Service() {
                     (bmp.height * scale).toInt().coerceAtLeast(1),
                     true
                 )
-            } else if (baseScale < 1f) {
-                // 已降采样且尺寸不大：直接共享该位图，回调里不再回收它（见 sharedWithSmall）
-                smallScale = baseScale
-                bmp
             } else {
                 // 原图且尺寸不大：另建副本，避免回调回收后取色失效
                 smallScale = 1f
@@ -467,9 +461,14 @@ class OcrService : Service() {
         OcrBridge.detach(this)
     }
 
+    @Suppress("DEPRECATION")
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
+        // UI_HIDDEN 是"切到后台"，不代表内存紧张，不能据此清模型。
+        // 只在 RUNNING_CRITICAL 及以上（真正的内存压力）才释放。
+        val pressure = level != android.content.ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN &&
+            level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL
+        if (pressure) {
             main.removeCallbacks(closeTask)
             try {
                 recognizer?.close()
