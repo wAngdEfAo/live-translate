@@ -67,6 +67,9 @@ class MainActivity : Activity() {
     /** 首页「翻译与语言」摘要的基础文本，用来识别异步回填是否已被新一轮覆盖。 */
     private var transSummaryBase: String = ""
 
+    /** 测速进行中：单线程执行器会把连点排成阶梯，必须挡掉重入。 */
+    private var testBusy = false
+
     /** 首页四个入口的副标题（显示实时状态）。 */
     private var secTransDesc: TextView? = null
     private var secAccessDesc: TextView? = null
@@ -1186,11 +1189,24 @@ class MainActivity : Activity() {
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply { rightMargin = dp(8f) })
-        // 固定基准句：跨版本/跨机型对比必须用同一句，否则中位数没有可比性
-        testRow.addView(smallBtn("填入基准句", R.color.fg_dim) {
-            onnxTestIn?.setText(Latency.BENCH)
+        // 固定基准句：按当前目标语言自动选（翻成英文喂中文句，翻成中文喂英文句）。
+        // 跨版本/跨机型对比必须用同一句，否则中位数没有可比性。
+        val benchBtn = smallBtn("填入基准句", R.color.fg_dim) {
+            val bench = Latency.benchFor(Prefs.tgtLang)
+            onnxTestIn?.setText(bench)
             onnxTestIn?.setSelection(onnxTestIn?.text?.length ?: 0)
-        })
+        }
+        benchBtn.setOnLongClickListener {
+            // 长按清空当前方向的样本，重新开始统计
+            val k = EnginePack.pairKey(
+                if (Prefs.tgtLang == Languages.TARGET_ZH) Languages.TARGET_EN else Languages.TARGET_ZH,
+                Prefs.tgtLang
+            )
+            if (k != null) Latency.clear(k)
+            toast("已清空该方向的延迟样本")
+            true
+        }
+        testRow.addView(benchBtn)
 
         return card
     }
@@ -1306,11 +1322,6 @@ class MainActivity : Activity() {
             toast("先导入 " + pairName(key ?: "en_zh") + " 的模型包")
             return
         }
-        val input = onnxTestIn?.text?.toString()?.trim().orEmpty()
-        if (input.isEmpty()) {
-            toast("先输入一句原文")
-            return
-        }
         onnxTestOut?.setTextColor(color(R.color.fg_dim))
         // 静默期内点这个按钮只会拿到"模型刚释放"的报错，容易以为坏了；直接说清楚
         if (OnnxEngine.isSilenced()) {
@@ -1319,35 +1330,52 @@ class MainActivity : Activity() {
             onnxTestOut?.text = "内存压力静默期，约 " + ((left + 999) / 1000) + " 秒后再测"
             return
         }
+        // 上一次还没跑完就再点：单线程执行器会把它们排成阶梯（第 2 次≈2D…），
+        // 量出来的中位数是真实值的数倍。这里直接挡掉，并提示等结果出来再点。
+        if (testBusy) {
+            toast("等这次结果出来再点（每次都是真解码）")
+            return
+        }
+        val input = onnxTestIn?.text?.toString()?.trim().orEmpty()
+        if (input.isEmpty()) {
+            toast("先输入一句原文")
+            return
+        }
+        testBusy = true
+        onnxTestOut?.setTextColor(color(R.color.fg_dim))
         onnxTestOut?.text = "翻译中…"
-        // 走旁路：不查缓存也不写缓存。否则同一句连点十次，第 2 次起全是缓存命中（几毫秒），
-        // 中位数会被填成"很快"，结论与真实解码耗时正好相反。
         val loadedBefore = OnnxEngine.isLoaded()
-        val t0 = System.currentTimeMillis()
-        OnnxEngine.translateFresh(src, tgt, input) { err, out ->
+        val clickedAt = System.currentTimeMillis()
+        var startedAt = 0L
+        OnnxEngine.translateFresh(src, tgt, input, { err, out ->
             runOnUiThread {
-                val ms = System.currentTimeMillis() - t0
-                if (err == null) Latency.record(key, ms, input.length)
+                testBusy = false
+                val endAt = System.currentTimeMillis()
+                val queued = if (startedAt > 0L) startedAt - clickedAt else 0L
+                // 只把「解码」记进样本：排队与首次加载都会把数字放大
+                val decode = if (startedAt > 0L) endAt - startedAt else endAt - clickedAt
+                if (err == null) Latency.record(key, decode, input.length)
                 val n = Latency.count(key)
                 val p50 = Latency.median(key)
                 onnxTestOut?.setTextColor(color(if (err != null) R.color.warn else R.color.ok))
                 onnxTestOut?.text = if (err != null) {
                     err
                 } else {
-                    "→ " + out + "\n用时 " + ms + "ms" +
+                    "→ " + out +
+                        "\n排队 " + queued + "ms + 解码 " + decode + "ms" +
                         (if (!loadedBefore) "（含加载模型）" else "") +
                         "；输入 " + input.length + " 字符" +
-                        "\n" + pairName(key) + " 近 " + n + " 次：中位数 " + p50 + "ms" +
+                        "\n" + pairName(key) + " 近 " + n + " 次解码：中位数 " + p50 + "ms" +
                         "（min " + Latency.min(key) + " / max " + Latency.max(key) + "）" +
                         (if (p50 > 3000L) {
                             "\n提示：单句解码超过 3 秒，实时覆盖里大概率会超时回退 ML Kit"
                         } else {
                             ""
                         }) +
-                        "\n（每次都是真解码，结果不进缓存）"
+                        "\n（每次都是真解码；中位数只算解码时间）"
                 }
             }
-        }
+        }, { startedAt = System.currentTimeMillis() })
     }
 
     /** 主题选择：浅色 / 深色 / 跟随系统。改完重建 Activity（颜色是资源，不会自动重绘）。 */

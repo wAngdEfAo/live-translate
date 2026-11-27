@@ -141,13 +141,18 @@ object OnnxEngine : TransEngine {
      * 旁路翻译：不查缓存、也不写缓存。
      * 「精翻这段」必须走它 —— 否则同一句连点十次，第 2 次起全是缓存命中（几毫秒），
      * 中位数被几毫秒填满，量出来的"很快"与真实解码耗时的结论正好相反。
+     *
+     * @param onStart 任务真正开始解码时回调（等加载完、就在 greedy 之前）。
+     *   执行器是单线程的，界面上"连点"会把任务排成阶梯；调用方靠这个回调区分
+     *   「排队时间」与「解码时间」，中位数只该取后者。
      */
     fun translateFresh(
         src: String,
         tgt: String,
         text: String,
-        cb: (err: String?, out: String) -> Unit
-    ) = doTranslate(src, tgt, text, cb, useCache = false)
+        cb: (err: String?, out: String) -> Unit,
+        onStart: (() -> Unit)? = null
+    ) = doTranslate(src, tgt, text, cb, useCache = false, onStart = onStart)
 
     /** 会话当前是否已加载（用来区分「含首次加载模型」的样本）。 */
     fun isLoaded(): Boolean = loadedKey != null && enc != null && dec != null
@@ -157,7 +162,8 @@ object OnnxEngine : TransEngine {
         tgt: String,
         text: String,
         cb: (err: String?, out: String) -> Unit,
-        useCache: Boolean
+        useCache: Boolean,
+        onStart: (() -> Unit)? = null
     ) {
         if (text.isBlank()) {
             cb(null, "")
@@ -211,6 +217,8 @@ object OnnxEngine : TransEngine {
             var out = ""
             try {
                 val loaded = ensureLoaded(ctx, pair)
+                // 真正开始解码的点：之前的排队与加载都不算进"单句解码耗时"
+                onStart?.invoke()
                 out = greedy(loaded.first, loaded.second.first, loaded.second.second, text)
                 // 旁路测量（translateFresh）不写缓存：否则下一轮同样的句子又变成缓存命中
                 if (useCache && out.isNotBlank()) remember(key, out)
