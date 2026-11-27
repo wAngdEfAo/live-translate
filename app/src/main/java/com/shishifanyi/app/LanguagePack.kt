@@ -95,13 +95,25 @@ object LanguagePack {
     var busy: Boolean = false
         private set
 
-    private const val IDLE_MS = 60_000L
+    private const val IDLE_MS = 180_000L
 
     private fun key(src: String, tgt: String) = src + "-" + tgt
 
     fun clientFor(src: String, tgt: String): com.google.mlkit.nl.translate.Translator {
         val k = key(src, tgt)
         // computeIfAbsent 保证并发下只创建一个 client，不会出现两个线程各建一个
+        // 只保留一个语言对：切换语言时把其它客户端关掉，避免模型叠加常驻
+        if (!clients.containsKey(k)) {
+            try {
+                val it = clients.values.iterator()
+                while (it.hasNext()) {
+                    it.next().close()
+                    it.remove()
+                }
+            } catch (ex: Throwable) {
+                Log.w(TAG, "关闭旧语言对失败: " + ex.message)
+            }
+        }
         val c = clients.computeIfAbsent(k) {
             Translation.getClient(
                 TranslatorOptions.Builder()

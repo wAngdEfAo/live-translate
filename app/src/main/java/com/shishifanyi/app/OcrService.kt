@@ -38,6 +38,9 @@ class OcrService : Service() {
         /** 识别用最大宽度；超过则降采样，行框按比例还原到屏幕像素。 */
         private const val OCR_MAX_WIDTH = 1080
 
+        /** 识别器空闲这么久后关闭，释放原生模型内存。 */
+        private const val OCR_IDLE_MS = 180_000L
+
         @Volatile
         var pendingData: Intent? = null
             private set
@@ -75,7 +78,29 @@ class OcrService : Service() {
     private var projection: MediaProjection? = null
     private var reader: ImageReader? = null
     private var virtualDisplay: VirtualDisplay? = null
-    private val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+    @Volatile
+    private var recognizer: com.google.mlkit.vision.text.TextRecognizer? = null
+
+    private val closeTask = Runnable {
+        try {
+            recognizer?.close()
+        } catch (ex: Throwable) {
+            Log.w(TAG, "关闭识别器失败: " + ex.message)
+        }
+        recognizer = null
+        Log.d(TAG, "OCR 识别器空闲关闭，释放模型内存")
+    }
+
+    private fun recognizerOrCreate(): com.google.mlkit.vision.text.TextRecognizer {
+        var r = recognizer
+        if (r == null) {
+            r = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+            recognizer = r
+        }
+        main.removeCallbacks(closeTask)
+        main.postDelayed(closeTask, OCR_IDLE_MS)
+        return r
+    }
 
     /** 只留一张缩略图取色，避免常驻一整张全屏位图（约 12MB）。 */
     @Volatile
@@ -182,7 +207,7 @@ class OcrService : Service() {
             val r = ImageReader.newInstance(
                 // 这里用 PixelFormat 是对的：ImageFormat 里没有 RGBA_8888，
                 // ImageReader 接受 PixelFormat.RGBA_8888（与 ImageFormat 的编号体系不同）
-                dm.widthPixels, dm.heightPixels, PixelFormat.RGBA_8888, 2
+                dm.widthPixels, dm.heightPixels, PixelFormat.RGBA_8888, 1
             )
             val vd = p.createVirtualDisplay(
                 "live-translate-ocr",
@@ -281,10 +306,12 @@ class OcrService : Service() {
         }
         val useBmp = ocrBmp ?: bmp
         keepSmall(useBmp, scale)
-        recognizer.process(InputImage.fromBitmap(useBmp, 0))
+        // 若缩略图直接引用了 useBmp，回调里就不能回收它
+        val sharedWithSmall = smallFrame === useBmp
+        recognizerOrCreate().process(InputImage.fromBitmap(useBmp, 0))
             .addOnSuccessListener { result ->
                 try {
-                    useBmp.recycle()
+                    if (!sharedWithSmall) useBmp.recycle()
                 } catch (ex: Throwable) {
                     Log.w(TAG, "OcrService@244: " + ex.message)
                 }
@@ -306,7 +333,7 @@ class OcrService : Service() {
             }
             .addOnFailureListener { e ->
                 try {
-                    useBmp.recycle()
+                    if (!sharedWithSmall) useBmp.recycle()
                 } catch (ex: Throwable) {
                     Log.w(TAG, "OcrService@258: " + ex.message)
                 }
@@ -336,10 +363,13 @@ class OcrService : Service() {
                     (bmp.height * scale).toInt().coerceAtLeast(1),
                     true
                 )
-            } else {
-                // 不再缩小：必须另建独立副本。
-                // 直接引用 bmp 会在识别回调 recycle() 后失效，取色从此永远返回 null。
+            } else if (baseScale < 1f) {
+                // 已降采样且尺寸不大：直接共享该位图，回调里不再回收它（见 sharedWithSmall）
                 smallScale = baseScale
+                bmp
+            } else {
+                // 原图且尺寸不大：另建副本，避免回调回收后取色失效
+                smallScale = 1f
                 Bitmap.createBitmap(bmp)
             }
         } catch (t: Throwable) {
@@ -437,7 +467,26 @@ class OcrService : Service() {
         OcrBridge.detach(this)
     }
 
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
+            main.removeCallbacks(closeTask)
+            try {
+                recognizer?.close()
+            } catch (_: Throwable) {
+            }
+            recognizer = null
+            Log.d(TAG, "内存紧张，已释放 OCR 识别器")
+        }
+    }
+
     override fun onDestroy() {
+        main.removeCallbacks(closeTask)
+        try {
+            recognizer?.close()
+        } catch (_: Throwable) {
+        }
+        recognizer = null
         running = false
         OcrBridge.detach(this)
         releaseCapture()

@@ -949,6 +949,14 @@ class OverlayService : Service() {
 
     // ---------- 生命周期 ----------
 
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
+            LanguagePack.releaseAll()
+            Log.d("Overlay", "内存紧张，已释放翻译模型")
+        }
+    }
+
     override fun onDestroy() {
         main.removeCallbacksAndMessages(null)
         if (inst === this) inst = null
