@@ -67,6 +67,9 @@ class MainActivity : Activity() {
     /** 首页「翻译与语言」摘要的基础文本，用来识别异步回填是否已被新一轮覆盖。 */
     private var transSummaryBase: String = ""
 
+    /** 「精翻这段」最近几次的耗时，用来在真机上量单句解码延迟（P5 的关键未知量）。 */
+    private val testTimes = ArrayList<Long>()
+
     /** 首页四个入口的副标题（显示实时状态）。 */
     private var secTransDesc: TextView? = null
     private var secAccessDesc: TextView? = null
@@ -1301,11 +1304,24 @@ class MainActivity : Activity() {
         onnxTestOut?.setTextColor(color(R.color.fg_dim))
         onnxTestOut?.text = "翻译中…"
         val t0 = System.currentTimeMillis()
+        val firstRun = testTimes.isEmpty()
         OnnxEngine.translate(src, tgt, input) { err, out ->
             runOnUiThread {
                 val ms = System.currentTimeMillis() - t0
+                if (err == null) {
+                    testTimes.add(ms)
+                    while (testTimes.size > 5) testTimes.removeAt(0)
+                }
+                val p50 = if (testTimes.isEmpty()) 0L else testTimes.sorted()[testTimes.size / 2]
                 onnxTestOut?.setTextColor(color(if (err != null) R.color.warn else R.color.ok))
-                onnxTestOut?.text = if (err != null) err else "→ " + out + "（" + ms + "ms）"
+                onnxTestOut?.text = if (err != null) {
+                    err
+                } else {
+                    "→ " + out + "\n用时 " + ms + "ms" +
+                        (if (firstRun) "（含首次加载模型）" else "") +
+                        "；最近 " + testTimes.size + " 次中位数 " + p50 + "ms" +
+                        (if (p50 > 3000L) "\n提示：单句解码超过 3 秒，实时覆盖里大概率会超时回退 ML Kit" else "")
+                }
             }
         }
     }

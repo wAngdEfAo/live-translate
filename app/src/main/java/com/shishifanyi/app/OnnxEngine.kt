@@ -445,6 +445,9 @@ object OnnxEngine : TransEngine {
         }
     }
 
+    /** 是否正在等待释放（与 25 秒静默期是两个不同的闸门，日志要分开说）。 */
+    fun isReleasing(): Boolean = releasePending
+
     /** 是否处于压力释放后的静默期（选择器据此直接走 ML Kit，免得每块都白调度一次）。 */
     fun isSilenced(): Boolean {
         val until = noLoadUntil

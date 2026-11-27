@@ -490,6 +490,8 @@ object AppCore {
                 }
                 // 高精度单句可能要一两秒，给它更长的等待；ML Kit 保持原来的 2 秒
                 val finished = latch.await(if (engine === OnnxEngine) 6000L else 2L, TimeUnit.SECONDS)
+                // 先取一次状态：等我们自己回退完，closeNow 可能已经把 releasePending 清掉了
+                val releasing = engine === OnnxEngine && OnnxEngine.isReleasing()
                 if (!ok && engine === OnnxEngine) {
                     // 只有「等到超时」才进冷却。会话被内存压力关掉、模型被删、加载失败
                     // 都是错误路径，下一句应当重新加载再试，而不是让接着两分钟所有长句
@@ -506,7 +508,12 @@ object AppCore {
                     }
                     fallback.await(2, TimeUnit.SECONDS)
                     if (ok) {
-                        Log.d(TAG, if (finished) "高精度报错，已回退 ML Kit" else "高精度超时，已回退 ML Kit")
+                        when {
+                            // 释放进行中：这是内存压力导致的，不是翻译失败，别让人误读日志
+                            releasing -> Log.d(TAG, "高精度会话正在释放，本轮改用 ML Kit")
+                            !finished -> Log.d(TAG, "高精度超时，已回退 ML Kit")
+                            else -> Log.d(TAG, "高精度报错，已回退 ML Kit")
+                        }
                     }
                 }
                 if (ok) {

@@ -89,6 +89,9 @@ object EnginePack {
                     // 上次替换在「改成 .old」之后崩了：把旧目录挪回去，别让这个方向丢包
                     if (f.renameTo(dest)) {
                         Log.d(TAG, "恢复被中断的模型目录: $key")
+                        // 恢复出来的方向要立刻对引擎可见：将来若有运行期清理入口，这里同样需要
+                        OnnxEngine.invalidateInstalled()
+                        clearManifestCache()
                     } else if (f.deleteRecursively()) {
                         Log.w(TAG, "恢复失败，已清理: " + f.name)
                     }
