@@ -36,6 +36,23 @@ object TextPipeline {
     /** 密码框在 OCR 结果里是一串圆点/星号，这种行不该被当成待翻译文本。 */
     private val maskRe = Regex("^[\\u2022\\u00B7\\u25CF\\u2731\\uFF0A*\\u2219\\s]+$")
 
+    /** 掩码字符集，与 maskRe 保持一致。 */
+    private const val MASK_CHARS = "\u2022\u00B7\u25CF\u2731\uFF0A*\u2219"
+
+    /**
+     * 密码 / 验证码行判定。
+     * 以前只认「整行都是掩码」，于是「密码 ••••••」这种「短标签 + 掩码」的混排行
+     * 会原样送进翻译模型。这里额外认：掩码字符 ≥4 个、且不少于行内字母数
+     * （字母只可能是前面那个短标签）。
+     */
+    private fun looksMasked(line: String): Boolean {
+        if (maskRe.matches(line)) return true
+        val mask = line.count { MASK_CHARS.indexOf(it) >= 0 }
+        if (mask < 4) return false
+        val letters = line.count { it.isLetter() }
+        return letters <= 8 && mask >= letters
+    }
+
     private const val MAX_BLOCKS = 30
 
     /**
@@ -123,8 +140,11 @@ object TextPipeline {
         if (src == "auto") return true
         return when (src) {
             "zh" -> hasCjk(line)
-            "ja" -> hasKana(line) || hasCjk(line)
-            "ko" -> hasHangul(line) || hasCjk(line)
+            // 日/韩界面里大量英文标签（WiFi、Settings、OK）。只放行假名/谚文会让这些行
+            // 整行被丢，所以两种文字之外还允许「像英文的多词行」通过；
+            // 它们由 AppCore 改走英语直连，不喂给 ja→en 模型。
+            "ja" -> hasKana(line) || hasCjk(line) || latinWords(line) >= 2
+            "ko" -> hasHangul(line) || hasCjk(line) || latinWords(line) >= 2
             // 西里尔
             "ru", "uk", "be", "bg", "mk" -> hasCyrillic(line)
             "el" -> hasGreek(line)
@@ -141,9 +161,12 @@ object TextPipeline {
             "te" -> hasTelugu(line)
             "kn" -> hasKannada(line)
             // 其余为拉丁语系
-            else -> wordRe.findAll(line).count() >= 2
+            else -> latinWords(line) >= 2
         }
     }
+
+    /** 拉丁词个数（与最终 else 分支同一套判据）。 */
+    private fun latinWords(line: String): Int = wordRe.findAll(line).count()
     private const val MAX_TOTAL_CHARS = 1600
 
     fun filter(
@@ -180,7 +203,7 @@ object TextPipeline {
             }
             if (line == prev) continue
 
-            if (maskRe.matches(line)) {
+            if (looksMasked(line)) {
                 // 掩码行不是"脚本不符"，单独计数才看得懂日志
                 if (stats != null) stats.masked++
                 continue

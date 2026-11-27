@@ -33,10 +33,15 @@ class MainActivity : Activity() {
         private const val REQ_OCR = 1001
         private const val REQ_EXPORT = 1002
         private const val REQ_IMPORT = 1003
+        private const val REQ_ENGINE_IMPORT = 1004
+        private const val REQ_ENGINE_EXPORT = 1005
 
         // 导入 zip 的上限：条目数或解压体积任意一项超限就停止，避免把内部存储写满
         private const val MAX_ENTRY_COUNT = 200
         private const val MAX_TOTAL_BYTES = 256L * 1024 * 1024
+
+        /** 单条目上限：ML Kit 模型目录里最大的文件也就百兆出头，明显超过的多半是炸弹。 */
+        private const val MAX_ENTRY_BYTES = 128L * 1024 * 1024
     }
 
     private var accState: TextView? = null
@@ -100,6 +105,9 @@ class MainActivity : Activity() {
         // 存储占用
         root.addView(storageCard())
 
+        // 高精度引擎（可选第二引擎）
+        root.addView(engineCard())
+
         // ADB 开启无障碍
         root.addView(adbCard())
 
@@ -146,6 +154,8 @@ class MainActivity : Activity() {
             AppCore.resetDedupe()
             AppCore.syncOcrService()
             OverlayService.refreshForeground()
+            // 重新打开时主动取一次词：屏幕不动就没有无障碍事件，否则打开后一直空白
+            if (checked) ScreenReaderService.requestCapture()
         }
         card.addView(startSwitch)
 
@@ -167,6 +177,11 @@ class MainActivity : Activity() {
 
     private var storageSize: TextView? = null
     private val langRows = LinkedHashMap<String, Pair<TextView, TextView>>()
+
+    /** 语言行状态的刷新代次与在途标记：防止 onResume 把 58 次查询排队复制。 */
+    private var langRowGen = 0
+    private var langRowBusy = false
+    private var langRowAt = 0L
     private var langBox: LinearLayout? = null
     private var expandBtn: TextView? = null
     private var currentLangLabel: TextView? = null
@@ -317,6 +332,8 @@ class MainActivity : Activity() {
     private fun buildLangRows(box: LinearLayout) {
         langRows.clear()
         box.removeAllViews()
+        // 重建后旧一轮的「在途」标记没有意义，放掉
+        langRowBusy = false
         val tgt = Prefs.tgtLang
         // 自动检测排第一，其余按 Languages 里的顺序（常用在前）
         val entries = ArrayList<Pair<String, String>>(Languages.ALL.size)
@@ -392,8 +409,8 @@ class MainActivity : Activity() {
     private fun showAutoHint(tgt: String) {
         val h = autoHint ?: return
         h.text = buildString {
-            append("· 部分语言需经 ML Kit 中转，翻译速度可能受影响，影响程度随 ML Kit 的中转次数增加。\n")
-            append("· 自动检测目前还在测试阶段，可能出现翻译时间长、翻译不准确等问题。\n")
+            append("· 在某些语言下翻译速度可能出现影响，具体影响速度受到mlkit中转次数而增加\n")
+            append("· 自动检测目前还在测试阶段，可能出现翻译时间长，翻译不准确等问题\n")
             append("· 当前目标：" + targetName(tgt) + "，检测池 58 种语言（不含" + targetName(tgt) + "自身）。")
         }
         h.visibility = View.VISIBLE
@@ -421,6 +438,10 @@ class MainActivity : Activity() {
         val tgt = Prefs.tgtLang
         LanguagePack.isReady(code, tgt) { ready ->
             runOnUiThread {
+                if (ready && code == Languages.TARGET_EN) {
+                    toast("英语是枢纽语言，没有独立模型可删")
+                    return@runOnUiThread
+                }
                 if (ready) {
                     LanguagePack.deleteSource(code) { ok ->
                         runOnUiThread {
@@ -475,26 +496,315 @@ class MainActivity : Activity() {
         // 列表收起时不去查 58 个模型的状态，省掉上百次查询；展开时再刷新
         if (langBox?.visibility != View.VISIBLE) return
 
-        for ((code, name) in langRows.keys.map { it to Languages.name(it) }) {
-            val pair = langRows[code] ?: continue
-            val state = pair.first
-            val action = pair.second
-            val isCur = code == cur
-            state.text = if (isCur) "使用中 " else ""
-            state.setTextColor(color(if (isCur) R.color.accent else R.color.fg_dim))
-            if (code == "auto") continue
+        // 「自动检测」那行没有模型，状态直接在这里写
+        val autoPair = langRows["auto"]
+        val autoOn = cur == "auto"
+        autoPair?.first?.text = if (autoOn) "使用中 " else ""
+        autoPair?.first?.setTextColor(color(if (autoOn) R.color.accent else R.color.fg_dim))
+
+        // 上一轮还没回来就别再叠一轮：onResume 会反复触发，58 次 IPC 不该排队复制；
+        // 超过 3 秒还没收尾就当作丢了，允许重来
+        val now = System.currentTimeMillis()
+        if (langRowBusy && now - langRowAt < 3000L) return
+        langRowBusy = true
+        langRowAt = now
+        val gen = ++langRowGen
+
+        val codes = langRows.keys.filter { it != "auto" }
+        if (codes.isEmpty()) {
+            langRowBusy = false
+            return
+        }
+        var left = codes.size
+        for (code in codes) {
             LanguagePack.isReady(code, tgt) { ready ->
                 runOnUiThread {
-                    if (ready) {
-                        action.text = "删除"
-                        action.setTextColor(color(R.color.warn))
-                        action.background = rounded2(0x1AFFFFFF, 8f)
-                    } else {
-                        action.text = "下载"
-                        action.setTextColor(color(R.color.ok))
-                        action.background = rounded2(0x1AFFFFFF, 8f)
-                    }
+                    // 代次不符说明目标语言已经换了，这一轮结果全部作废
+                    if (gen == langRowGen) applyLangRow(code, tgt, ready)
+                    left--
+                    if (left == 0 && gen == langRowGen) langRowBusy = false
                 }
+            }
+        }
+    }
+
+    /** 把某一行的「使用中」标记与右侧按钮画上去。 */
+    private fun applyLangRow(code: String, tgt: String, ready: Boolean) {
+        val pair = langRows[code] ?: return
+        val state = pair.first
+        val action = pair.second
+        val isCur = code == Prefs.srcLang
+        state.text = if (isCur) "使用中 " else ""
+        state.setTextColor(color(if (isCur) R.color.accent else R.color.fg_dim))
+        if (code == Languages.TARGET_EN) {
+            // 英语是枢纽：它自己没有独立模型，这一行要的是「目标语言」模型。
+            // 删它等于删掉整个目标语言包，deleteSource 也会直接拒绝，
+            // 所以这里不提供「删除」，只给下载/已就绪。
+            action.text = if (ready) "已就绪" else "下载"
+            action.isClickable = !ready
+            action.setTextColor(color(if (ready) R.color.ok else R.color.fg_dim))
+            action.background = rounded2(0x1AFFFFFF, 8f)
+            return
+        }
+        if (ready) {
+            action.text = "删除"
+            action.setTextColor(color(R.color.warn))
+            action.background = rounded2(0x1AFFFFFF, 8f)
+        } else {
+            action.text = "下载"
+            action.setTextColor(color(R.color.ok))
+            action.background = rounded2(0x1AFFFFFF, 8f)
+        }
+    }
+
+    private var engineState: TextView? = null
+    private val engineChips = LinkedHashMap<String, TextView>()
+    private var onnxTestIn: android.widget.EditText? = null
+    private var onnxTestOut: TextView? = null
+
+    private fun pairName(k: String): String = when (k) {
+        "en_zh" -> "英→中"
+        "zh_en" -> "中→英"
+        else -> k
+    }
+
+    /**
+     * 高精度引擎卡片：引擎切换、模型包导入导出、以及一个立刻能试出来的精翻输入框。
+     * 模型不进 APK（单方向约 146MB），必须单独导入。
+     */
+    private fun engineCard(): LinearLayout {
+        val card = LinearLayout(this)
+        card.orientation = LinearLayout.VERTICAL
+        card.background = rounded(R.color.card, 16f)
+        card.setPadding(dp(18f), dp(16f), dp(18f), dp(16f))
+        val lp = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        )
+        lp.bottomMargin = dp(12f)
+        card.layoutParams = lp
+
+        card.addView(text("高精度引擎（可选）", 15f, R.color.fg, true))
+        card.addView(
+            text(
+                "用 OPUS-MT 的 int8 模型做英⇄中精翻，长句更通顺，但比 ML Kit 慢很多。" +
+                    "模型不打进安装包：单方向约 146MB，需单独导入。实时覆盖默认仍走 ML Kit。",
+                12f, R.color.fg_dim, false
+            ).apply { setPadding(0, dp(6f), 0, dp(10f)) }
+        )
+
+        val chipRow = LinearLayout(this)
+        chipRow.orientation = LinearLayout.HORIZONTAL
+        chipRow.gravity = Gravity.CENTER_VERTICAL
+        chipRow.setPadding(0, 0, 0, dp(8f))
+        card.addView(chipRow)
+        chipRow.addView(text("引擎：", 12f, R.color.fg_dim, false))
+        engineChips.clear()
+        for ((code, label) in listOf(Engines.ENGINE_MLKIT to "标准", Engines.ENGINE_ONNX to "高精度")) {
+            val chip = TextView(this)
+            chip.text = label
+            chip.textSize = 12.5f
+            chip.gravity = Gravity.CENTER
+            chip.setPadding(dp(16f), dp(6f), dp(16f), dp(6f))
+            chip.isClickable = true
+            chip.setOnClickListener { pickEngine(code) }
+            val clp = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+            clp.rightMargin = dp(8f)
+            chipRow.addView(chip, clp)
+            engineChips[code] = chip
+        }
+
+        card.addView(toggleRow("仅长句用高精度（短文案仍走 ML Kit）", Prefs.onnxLongOnly) {
+            Prefs.onnxLongOnly = it
+            AppCore.resetDedupe()
+        })
+
+        val st = text("检查中…", 12f, R.color.fg_dim, false)
+        st.setPadding(0, dp(4f), 0, dp(8f))
+        card.addView(st)
+        engineState = st
+
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        card.addView(row)
+        val imp = smallBtn("导入模型包", R.color.accent) { importEnginePack() }
+        val impLp = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        )
+        impLp.rightMargin = dp(10f)
+        row.addView(imp, impLp)
+        val exp = smallBtn("导出", R.color.fg_dim) { exportEnginePack() }
+        val expLp = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        )
+        expLp.rightMargin = dp(10f)
+        row.addView(exp, expLp)
+        row.addView(smallBtn("删除", R.color.warn) { removeEnginePack() })
+
+        // 精翻自测：直接翻一段，看效果也看耗时
+        val input = android.widget.EditText(this)
+        input.hint = "在这里输入一句原文，试试高精度引擎"
+        input.textSize = 13f
+        input.setTextColor(color(R.color.fg))
+        input.setHintTextColor(color(R.color.fg_dim))
+        input.setBackground(rounded2(0xFF0B0E12.toInt(), 10f))
+        input.setPadding(dp(12f), dp(10f), dp(12f), dp(10f))
+        input.minLines = 2
+        input.gravity = Gravity.TOP or Gravity.START
+        input.inputType = android.text.InputType.TYPE_CLASS_TEXT or
+            android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
+        val inputLp = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        )
+        inputLp.topMargin = dp(10f)
+        card.addView(input, inputLp)
+        onnxTestIn = input
+
+        val out = text("", 12.5f, R.color.ok, false)
+        out.setPadding(0, dp(8f), 0, 0)
+        card.addView(out)
+        onnxTestOut = out
+
+        val testLp = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        )
+        testLp.topMargin = dp(8f)
+        card.addView(smallBtn("精翻这段", R.color.ok) { runEngineTest() }, testLp)
+
+        return card
+    }
+
+    private fun pickEngine(code: String) {
+        if (Prefs.engine == code) return
+        Prefs.engine = code
+        AppCore.resetDedupe()
+        refreshEngineCard()
+        toast(
+            if (code == Engines.ENGINE_ONNX) "已切到高精度（仅英⇄中，长句优先）"
+            else "已切回标准引擎"
+        )
+    }
+
+    private fun refreshEngineCard() {
+        val on = Prefs.engine == Engines.ENGINE_ONNX
+        for ((code, chip) in engineChips) {
+            val sel = code == Prefs.engine
+            chip.setTextColor(color(if (sel) R.color.bg else R.color.fg_dim))
+            chip.background =
+                if (sel) rounded(R.color.accent, 10f) else rounded2(0x1AFFFFFF, 10f)
+        }
+        val st = engineState ?: return
+        Thread {
+            val pairs = EnginePack.installed(this)
+            var txt = if (pairs.isEmpty()) {
+                "未安装模型包（英→中约 146MB，中→英约 146MB）"
+            } else {
+                "已安装：" + pairs.joinToString("、") { pairName(it.first) + " " + EnginePack.mb(it.second) } +
+                    "，共 " + EnginePack.mb(pairs.sumOf { it.second })
+            }
+            if (on && pairs.isEmpty()) txt += "；当前选了高精度但没模型，实际仍走 ML Kit"
+            val finalTxt = txt
+            runOnUiThread { st.text = finalTxt }
+        }.start()
+    }
+
+    private fun importEnginePack() {
+        try {
+            val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "application/zip"
+                putExtra(
+                    Intent.EXTRA_MIME_TYPES,
+                    arrayOf("application/zip", "application/octet-stream")
+                )
+            }
+            startActivityForResult(i, REQ_ENGINE_IMPORT)
+        } catch (t: Throwable) {
+            toast("无法打开文件选择器")
+        }
+    }
+
+    private fun doImportEnginePack(uri: android.net.Uri) {
+        toast("正在导入模型包，请稍候…")
+        Thread {
+            val result = EnginePack.importZip(this) { contentResolver.openInputStream(uri) }
+            runOnUiThread {
+                toast(result.second)
+                refreshEngineCard()
+                refreshStorage()
+            }
+        }.start()
+    }
+
+    private fun exportEnginePack() {
+        if (EnginePack.installed(this).isEmpty()) {
+            toast("还没有可导出的模型包")
+            return
+        }
+        try {
+            val i = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "application/zip"
+                putExtra(Intent.EXTRA_TITLE, "live-translate-engine-opus-mt-int8.zip")
+            }
+            startActivityForResult(i, REQ_ENGINE_EXPORT)
+        } catch (t: Throwable) {
+            toast("无法打开保存界面")
+        }
+    }
+
+    private fun doExportEnginePack(uri: android.net.Uri) {
+        toast("正在打包模型…")
+        Thread {
+            val ok = EnginePack.exportZip({ contentResolver.openOutputStream(uri) }, this)
+            runOnUiThread { toast(if (ok) "模型包已导出" else "导出失败") }
+        }.start()
+    }
+
+    private fun removeEnginePack() {
+        Thread {
+            var n = 0
+            for (k in listOf("en_zh", "zh_en")) {
+                if (EnginePack.remove(this, k)) n++
+            }
+            val msg = if (n == 0) "没有可删除的模型" else "已删除模型包（$n 个方向）"
+            runOnUiThread {
+                toast(msg)
+                refreshEngineCard()
+                refreshStorage()
+            }
+        }.start()
+    }
+
+    /** 用高精度引擎翻一段，结果与耗时直接显示在卡片里。 */
+    private fun runEngineTest() {
+        val tgt = Prefs.tgtLang
+        val src = if (tgt == Languages.TARGET_ZH) Languages.TARGET_EN else Languages.TARGET_ZH
+        val key = EnginePack.pairKey(src, tgt)
+        if (key == null || !EnginePack.isInstalled(this, key)) {
+            toast("先导入 " + pairName(key ?: "en_zh") + " 的模型包")
+            return
+        }
+        val input = onnxTestIn?.text?.toString()?.trim().orEmpty()
+        if (input.isEmpty()) {
+            toast("先输入一句原文")
+            return
+        }
+        onnxTestOut?.setTextColor(color(R.color.fg_dim))
+        onnxTestOut?.text = "翻译中…"
+        val t0 = System.currentTimeMillis()
+        OnnxEngine.translate(src, tgt, input) { err, out ->
+            runOnUiThread {
+                val ms = System.currentTimeMillis() - t0
+                onnxTestOut?.setTextColor(color(if (err != null) R.color.warn else R.color.ok))
+                onnxTestOut?.text = if (err != null) err else "→ " + out + "（" + ms + "ms）"
             }
         }
     }
@@ -606,8 +916,34 @@ class MainActivity : Activity() {
                             val target = resolveTarget(e.name)
                             if (target != null && !e.isDirectory) {
                                 target.parentFile?.mkdirs()
-                                FileOutputStream(target).use { zis.copyTo(it) }
-                                written += target.length()
+                                // 边写边判：只在条目开始前看累计值挡不住单个超大条目，
+                                // 一个几百兆的条目会被完整落盘之后才 break
+                                var n = 0L
+                                var over = false
+                                FileOutputStream(target).use { out ->
+                                    val buf = ByteArray(64 * 1024)
+                                    while (true) {
+                                        val r = zis.read(buf)
+                                        if (r <= 0) break
+                                        n += r
+                                        if (n > MAX_ENTRY_BYTES || written + n > MAX_TOTAL_BYTES) {
+                                            over = true
+                                            break
+                                        }
+                                        out.write(buf, 0, r)
+                                    }
+                                }
+                                if (over) {
+                                    // 半个文件留着没用，纯占空间
+                                    try {
+                                        target.delete()
+                                    } catch (ex: Throwable) {
+                                        Log.w(TAG, "MainActivity@615: " + ex.message)
+                                    }
+                                    truncated = true
+                                    break
+                                }
+                                written += n
                                 count++
                             }
                             zis.closeEntry()
@@ -1123,6 +1459,7 @@ class MainActivity : Activity() {
     private fun finishRefresh() {
         refreshStorage()
         refreshLangRows()
+        refreshEngineCard()
         hintOcrReauthIfNeeded()
 
         startSwitch?.isChecked = Prefs.translating
@@ -1179,6 +1516,8 @@ class MainActivity : Activity() {
         when (requestCode) {
             REQ_EXPORT -> doExport(data.data!!)
             REQ_IMPORT -> doImport(data.data!!)
+            REQ_ENGINE_IMPORT -> doImportEnginePack(data.data!!)
+            REQ_ENGINE_EXPORT -> doExportEnginePack(data.data!!)
         }
     }
 

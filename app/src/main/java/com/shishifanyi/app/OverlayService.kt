@@ -39,7 +39,8 @@ import kotlin.math.abs
 
 /**
  * 覆盖式译文：只在原文文字所在的矩形上覆盖译文（中文或英文），空白与图片保持透明。
- * 只处理屏幕顶部 60% 区域。另有一条很窄的控制条。
+ * 只处理屏幕上的一段区域（默认顶部 60%，可拖动分界线调整比例、也能切换成从下往上）。
+ * 另有一条很窄的控制条。
  */
 class OverlayService : Service() {
 
@@ -127,6 +128,29 @@ class OverlayService : Service() {
         }
     }
 
+    /** 控制条实测高度；布局完成前用经验值兜底。 */
+    private fun barHeight(): Int = bar?.height?.takeIf { it > 0 } ?: dp(40f)
+
+    /**
+     * 把控制条的 y 夹回屏幕内。
+     * 之前直接写 regionH + 6dp：底部模式下 regionH 等于全屏高，控制条会被推到屏幕
+     * 外面且再也点不到（连长按复位也在屏幕外），只能清数据才能恢复。
+     */
+    private fun clampBarY(y: Int): Int {
+        val max = (screenH - barHeight() - dp(2f)).coerceAtLeast(0)
+        return y.coerceIn(0, max)
+    }
+
+    /**
+     * 控制条的默认位置：贴着处理区边界，且一定在屏幕内。
+     * 从上往下覆盖时放在下边界之下；从下往上覆盖时放在上边界之上，
+     * 这样控制条永远落在「不翻译的那半屏」里，不会压住译文。
+     */
+    private fun defaultBarY(): Int {
+        val y = if (Prefs.regionFromTop) regionH + dp(6f) else regionTop - barHeight() - dp(6f)
+        return clampBarY(y)
+    }
+
     /** 只更新分界线位置与标签；块层固定覆盖全屏，靠坐标过滤区域。 */
     private fun updateRegion() {
         val (t, b) = AppCore.regionBounds()
@@ -141,6 +165,20 @@ class OverlayService : Service() {
                 wm.updateViewLayout(line, lp)
             } catch (ex: Throwable) {
                 Log.w(TAG, "OverlayService@126: " + ex.message)
+            }
+        }
+        // 用户没有手动摆过控制条时，让它跟着区域走（切换上/下、拖边界都要跟着挪）
+        val bv = bar
+        val bp = barLp
+        if (bv != null && bp != null && Prefs.barY < 0) {
+            val ny = defaultBarY()
+            if (ny != bp.y) {
+                bp.y = ny
+                try {
+                    wm.updateViewLayout(bv, bp)
+                } catch (ex: Throwable) {
+                    Log.w(TAG, "OverlayService@137: " + ex.message)
+                }
             }
         }
         val pct = Math.round(Prefs.regionRatio * 100).toString()
@@ -176,8 +214,13 @@ class OverlayService : Service() {
         addBoundaryLine()
         addBar()
         inst = this
+        // 新的覆盖层实例没有任何块可画，而 AppCore.lastKey 是进程级静态：
+        // 不清掉就会认为「这一屏已经画过」，同一屏永远不再显示译文
+        AppCore.resetDedupe()
         // 覆盖层起来了才需要 OCR；这里主动同步一次，避免上次残留状态
         AppCore.syncOcrService()
+        // 立刻取一次：屏幕静止时不会有无障碍事件，否则要等用户动屏幕才出译文
+        ScreenReaderService.requestCapture()
         main.postDelayed(watchdog, 30000L)
     }
 
@@ -258,7 +301,7 @@ class OverlayService : Service() {
         }
     }
 
-    /** 标明「只处理这条线以上」的 60% 分界线。 */
+    /** 标明处理区边界的可拖动分界线，标签里的百分比随实际比例更新（初始值只是占位）。 */
     private fun addBoundaryLine() {
         val row = LinearLayout(this)
         row.orientation = LinearLayout.HORIZONTAL
@@ -308,7 +351,7 @@ class OverlayService : Service() {
                     val ratio = if (Prefs.regionFromTop) lineY / sh else 1f - lineY / sh
                     Prefs.regionRatio = ratio
                     updateRegion()
-                    renderBlocks(lastBlocks)
+                    renderBlocks(lastBlocks, true)
                     true
                 }
 
@@ -356,14 +399,14 @@ class OverlayService : Service() {
                 val b = bar
                 val bp = barLp
                 if (b != null && bp != null && Prefs.barY < 0) {
-                    bp.y = regionH + dp(6f) - insetY
+                    bp.y = clampBarY(defaultBarY() - insetY)
                     try {
                         wm.updateViewLayout(b, bp)
                     } catch (ex: Throwable) {
                         Log.w(TAG, "OverlayService@362: " + ex.message)
                     }
                 }
-                if (lastBlocks.isNotEmpty()) renderBlocks(lastBlocks)
+                if (lastBlocks.isNotEmpty()) renderBlocks(lastBlocks, true)
             } catch (ex: Throwable) {
                 Log.w(TAG, "OverlayService@369: " + ex.message)
             }
@@ -433,7 +476,8 @@ class OverlayService : Service() {
         )
         p.gravity = Gravity.TOP or Gravity.START
         p.x = if (Prefs.barX >= 0) Prefs.barX else dp(8f)
-        p.y = if (Prefs.barY >= 0) Prefs.barY else regionH + dp(6f)
+        // 存盘位置也要夹一次：旧版本可能已经把控制条存到屏幕外了
+        p.y = if (Prefs.barY >= 0) clampBarY(Prefs.barY) else defaultBarY()
         barLp = p
 
         var hDownX = 0f
@@ -475,7 +519,7 @@ class OverlayService : Service() {
                         Prefs.barX = -1
                         Prefs.barY = -1
                         p.x = dp(8f)
-                        p.y = regionH + dp(6f) - insetY
+                        p.y = defaultBarY()
                         try {
                             wm.updateViewLayout(row, p)
                         } catch (ex: Throwable) {
@@ -483,6 +527,13 @@ class OverlayService : Service() {
                         }
                         Log.d("Overlay", "控制条已复位")
                     } else {
+                        // 拖出屏幕后松手也要夹回来，否则下次启动找不回控制条
+                        p.y = clampBarY(p.y)
+                        try {
+                            wm.updateViewLayout(row, p)
+                        } catch (ex: Throwable) {
+                            Log.w(TAG, "OverlayService@489: " + ex.message)
+                        }
                         Prefs.barX = p.x
                         Prefs.barY = p.y
                     }
@@ -520,6 +571,12 @@ class OverlayService : Service() {
                 }
 
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    p.y = clampBarY(p.y)
+                    try {
+                        wm.updateViewLayout(row, p)
+                    } catch (ex: Throwable) {
+                        Log.w(TAG, "OverlayService@527: " + ex.message)
+                    }
                     Prefs.barX = p.x
                     Prefs.barY = p.y
                     true
@@ -532,6 +589,18 @@ class OverlayService : Service() {
         try {
             wm.addView(row, p)
             bar = row
+            // 布局完成才有真实高度：再夹一次，避免经验值偏小让控制条底部露出半截
+            row.post {
+                val ny = clampBarY(p.y)
+                if (ny != p.y) {
+                    p.y = ny
+                    try {
+                        wm.updateViewLayout(row, p)
+                    } catch (ex: Throwable) {
+                        Log.w(TAG, "OverlayService@551: " + ex.message)
+                    }
+                }
+            }
         } catch (t: Throwable) {
             bar = null
         }
@@ -631,7 +700,7 @@ class OverlayService : Service() {
     // Layout.BREAK_STRATEGY_SIMPLE 与 LineBreaker.BREAK_STRATEGY_SIMPLE 都是 0，
 // 用 Layout 的常量无需 API 29 的类，lint 的 WrongConstant 在这里是误判
     @SuppressLint("WrongConstant")
-    private fun renderBlocks(raw: List<Pair<TextBlock, String>>) {
+    private fun renderBlocks(raw: List<Pair<TextBlock, String>>, force: Boolean = false) {
         val layer = blockLayer ?: return
         // 去重 key 必须含坐标：文字相同但位置变了（滚动、重新排版）时，
         // 只按文本比较会直接 return，译文就停在旧位置不动
@@ -639,7 +708,8 @@ class OverlayService : Service() {
             it.first.text + "\u0002" + it.second +
                 "\u0002" + it.first.rect.left + "," + it.first.rect.top
         }
-        if (key == lastRenderKey) return
+        // force：区域或窗口偏移变了，但块本身没变（key 相同），必须重画才能跟着裁剪
+        if (!force && key == lastRenderKey) return
         lastRenderKey = key
         lastBlocks = raw
         layer.removeAllViews()
@@ -695,7 +765,7 @@ class OverlayService : Service() {
             // 1) 按原文在该矩形里的排版反推字号，再整体放大 15%
             var size = fitSize(en, width - dp(2f), height) * FONT_SCALE
 
-            // 2) 中文更占地方：等比缩到能装下，最多缩到 65%
+            // 2) 中文更占地方：等比缩到能装下，最多缩到原来的 85%
             val paint = measurePaint
             paint.textSize = size
             var h = layoutHeight(zh, paint, width - dp(2f))
@@ -919,8 +989,13 @@ class OverlayService : Service() {
         val text = when {
             !acc -> "点此重新开启无障碍取词"
             !Prefs.translating -> "点此回到设置"
-            else -> "屏幕上 60% 区域显示" +
-                (if (Prefs.tgtLang == Languages.TARGET_EN) "英文" else "中文")
+            else -> {
+                // 比例与方向都是用户可改的，写死 60% 对不上实际处理区域
+                val pct = Math.round(Prefs.regionRatio * 100)
+                val where = if (Prefs.regionFromTop) "上方" else "下方"
+                "屏幕" + where + pct + "% 区域显示" +
+                    (if (Prefs.tgtLang == Languages.TARGET_EN) "英文" else "中文")
+            }
         }
 
         return builder
@@ -960,6 +1035,8 @@ class OverlayService : Service() {
             level == android.content.ComponentCallbacks2.TRIM_MEMORY_COMPLETE
         if (pressure) {
             LanguagePack.releaseAll()
+            // 高精度引擎的会话占着 150MB 以上原生内存，压力下必须一起放掉
+            OnnxEngine.release()
             Log.d("Overlay", "内存紧张，已释放翻译模型")
         }
     }
@@ -969,6 +1046,8 @@ class OverlayService : Service() {
         if (inst === this) inst = null
         // 覆盖层没了就不该继续截屏：所有退出路径（✕ 按钮、被系统回收、设置页关闭）都走这里
         AppCore.syncOcrService()
+        // 屏上的块随着窗口一起销毁，指纹必须一同作废，否则重开时不会重画
+        AppCore.resetDedupe()
         hideHistory()
         for (v in listOfNotNull(blockLayer, lineWin, bar)) {
             try {

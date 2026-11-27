@@ -1,0 +1,962 @@
+[
+ {
+  "text": "Hello world.",
+  "normalized": "▁Hello▁world.",
+  "pieces": [
+   "▁Hello",
+   "▁world",
+   "."
+  ],
+  "ids": [
+   3828,
+   431,
+   6,
+   0
+  ],
+  "decoded": "Hello world.",
+  "reference_ids": [
+   3828,
+   431,
+   6,
+   0
+  ]
+ },
+ {
+  "text": "The quick brown fox jumps over the lazy dog.",
+  "normalized": "▁The▁quick▁brown▁fox▁jumps▁over▁the▁lazy▁dog.",
+  "pieces": [
+   "▁The",
+   "▁quick",
+   "▁brown",
+   "▁fox",
+   "▁jump",
+   "s",
+   "▁over",
+   "▁the",
+   "▁lazy",
+   "▁dog",
+   "."
+  ],
+  "ids": [
+   26,
+   9122,
+   42380,
+   52548,
+   19685,
+   24,
+   287,
+   3,
+   53650,
+   9472,
+   6,
+   0
+  ],
+  "decoded": "The quick brown fox jumps over the lazy dog.",
+  "reference_ids": [
+   26,
+   9122,
+   42380,
+   52548,
+   19685,
+   24,
+   287,
+   3,
+   53650,
+   9472,
+   6,
+   0
+  ]
+ },
+ {
+  "text": "Please restart the application.",
+  "normalized": "▁Please▁restart▁the▁application.",
+  "pieces": [
+   "▁Please",
+   "▁restart",
+   "▁the",
+   "▁application",
+   "."
+  ],
+  "ids": [
+   1878,
+   44954,
+   3,
+   1211,
+   6,
+   0
+  ],
+  "decoded": "Please restart the application.",
+  "reference_ids": [
+   1878,
+   44954,
+   3,
+   1211,
+   6,
+   0
+  ]
+ },
+ {
+  "text": "Connection timed out after 30 seconds.",
+  "normalized": "▁Connection▁timed▁out▁after▁30▁seconds.",
+  "pieces": [
+   "▁Connection",
+   "▁time",
+   "d",
+   "▁out",
+   "▁after",
+   "▁30",
+   "▁seconds",
+   "."
+  ],
+  "ids": [
+   54417,
+   220,
+   104,
+   132,
+   560,
+   707,
+   16558,
+   6,
+   0
+  ],
+  "decoded": "Connection timed out after 30 seconds.",
+  "reference_ids": [
+   54417,
+   220,
+   104,
+   132,
+   560,
+   707,
+   16558,
+   6,
+   0
+  ]
+ },
+ {
+  "text": "I can't find the settings menu.",
+  "normalized": "▁I▁can't▁find▁the▁settings▁menu.",
+  "pieces": [
+   "▁I",
+   "▁can",
+   "'",
+   "t",
+   "▁find",
+   "▁the",
+   "▁settings",
+   "▁menu",
+   "."
+  ],
+  "ids": [
+   28,
+   123,
+   23,
+   60,
+   1299,
+   3,
+   14482,
+   35705,
+   6,
+   0
+  ],
+  "decoded": "I can't find the settings menu.",
+  "reference_ids": [
+   28,
+   123,
+   23,
+   60,
+   1299,
+   3,
+   14482,
+   35705,
+   6,
+   0
+  ]
+ },
+ {
+  "text": "He said “hello” and left.",
+  "normalized": "▁He▁said▁“hello”▁and▁left.",
+  "pieces": [
+   "▁He",
+   "▁said",
+   "▁“",
+   "h",
+   "ello",
+   "”",
+   "▁and",
+   "▁left",
+   "."
+  ],
+  "ids": [
+   250,
+   415,
+   196,
+   1116,
+   25098,
+   217,
+   7,
+   2130,
+   6,
+   0
+  ],
+  "decoded": "He said “hello” and left.",
+  "reference_ids": [
+   250,
+   415,
+   196,
+   1116,
+   25098,
+   217,
+   7,
+   2130,
+   6,
+   0
+  ]
+ },
+ {
+  "text": "It’s 50% off — today only!",
+  "normalized": "▁It’s▁50%▁off▁—▁today▁only!",
+  "pieces": [
+   "▁It",
+   "’",
+   "s",
+   "▁50",
+   "%",
+   "▁off",
+   "▁",
+   "—",
+   "▁today",
+   "▁only",
+   "!"
+  ],
+  "ids": [
+   84,
+   1247,
+   24,
+   2067,
+   1003,
+   1122,
+   8,
+   920,
+   1657,
+   275,
+   50,
+   0
+  ],
+  "decoded": "It’s 50% off — today only!",
+  "reference_ids": [
+   84,
+   1247,
+   24,
+   2067,
+   1003,
+   1122,
+   8,
+   920,
+   1657,
+   275,
+   50,
+   0
+  ]
+ },
+ {
+  "text": "Wait… what?",
+  "normalized": "▁Wait...▁what?",
+  "pieces": [
+   "▁Wait",
+   "...",
+   "▁what",
+   "?"
+  ],
+  "ids": [
+   4229,
+   70,
+   210,
+   25,
+   0
+  ],
+  "decoded": "Wait... what?",
+  "reference_ids": [
+   4229,
+   70,
+   210,
+   25,
+   0
+  ]
+ },
+ {
+  "text": "Press (OK) to continue.",
+  "normalized": "▁Press▁(OK)▁to▁continue.",
+  "pieces": [
+   "▁Press",
+   "▁(",
+   "OK",
+   ")",
+   "▁to",
+   "▁continue",
+   "."
+  ],
+  "ids": [
+   12388,
+   22,
+   23334,
+   17,
+   9,
+   405,
+   6,
+   0
+  ],
+  "decoded": "Press (OK) to continue.",
+  "reference_ids": [
+   12388,
+   22,
+   23334,
+   17,
+   9,
+   405,
+   6,
+   0
+  ]
+ },
+ {
+  "text": "v1.2.3 – build 45",
+  "normalized": "▁v1.2.3▁–▁build▁45",
+  "pieces": [
+   "▁v",
+   "1.2",
+   ".3",
+   "▁",
+   "–",
+   "▁build",
+   "▁45"
+  ],
+  "ids": [
+   3071,
+   11662,
+   2313,
+   8,
+   3484,
+   2540,
+   3770,
+   0
+  ],
+  "decoded": "v1.2.3 – build 45",
+  "reference_ids": [
+   3071,
+   11662,
+   2313,
+   8,
+   3484,
+   2540,
+   3770,
+   0
+  ]
+ },
+ {
+  "text": "café naïve résumé",
+  "normalized": "▁café▁naïve▁résumé",
+  "pieces": [
+   "▁caf",
+   "é",
+   "▁na",
+   "ï",
+   "ve",
+   "▁r",
+   "é",
+   "sum",
+   "é"
+  ],
+  "ids": [
+   56847,
+   1062,
+   30246,
+   32200,
+   411,
+   15174,
+   1062,
+   20397,
+   1062,
+   0
+  ],
+  "decoded": "café naïve résumé",
+  "reference_ids": [
+   56847,
+   1062,
+   30246,
+   32200,
+   411,
+   15174,
+   1062,
+   20397,
+   1062,
+   0
+  ]
+ },
+ {
+  "text": "100 % sure",
+  "normalized": "▁100▁%▁sure",
+  "pieces": [
+   "▁100",
+   "▁",
+   "%",
+   "▁sure"
+  ],
+  "ids": [
+   2520,
+   8,
+   1003,
+   2198,
+   0
+  ],
+  "decoded": "100 % sure",
+  "reference_ids": [
+   2520,
+   8,
+   1003,
+   2198,
+   0
+  ]
+ },
+ {
+  "text": "  leading and trailing  ",
+  "normalized": "▁leading▁and▁trailing",
+  "pieces": [
+   "▁leading",
+   "▁and",
+   "▁trail",
+   "ing"
+  ],
+  "ids": [
+   3545,
+   7,
+   34146,
+   129,
+   0
+  ],
+  "decoded": "leading and trailing",
+  "reference_ids": [
+   3545,
+   7,
+   34146,
+   129,
+   0
+  ]
+ },
+ {
+  "text": "double  space   here",
+  "normalized": "▁double▁space▁here",
+  "pieces": [
+   "▁double",
+   "▁space",
+   "▁here"
+  ],
+  "ids": [
+   8603,
+   1190,
+   315,
+   0
+  ],
+  "decoded": "double space here",
+  "reference_ids": [
+   8603,
+   1190,
+   315,
+   0
+  ]
+ },
+ {
+  "text": "line\nbreak\tand tab",
+  "normalized": "▁line▁break▁and▁tab",
+  "pieces": [
+   "▁line",
+   "▁break",
+   "▁and",
+   "▁tab"
+  ],
+  "ids": [
+   1586,
+   6027,
+   7,
+   31552,
+   0
+  ],
+  "decoded": "line break and tab",
+  "reference_ids": [
+   1586,
+   6027,
+   7,
+   31552,
+   0
+  ]
+ },
+ {
+  "text": "ＡＢＣ ０１２",
+  "normalized": "▁ABC▁012",
+  "pieces": [
+   "▁A",
+   "BC",
+   "▁0",
+   "12"
+  ],
+  "ids": [
+   80,
+   33550,
+   3656,
+   161,
+   0
+  ],
+  "decoded": "ABC 012",
+  "reference_ids": [
+   80,
+   33550,
+   3656,
+   161,
+   0
+  ]
+ },
+ {
+  "text": "「你好」と言った",
+  "normalized": "▁「你好」と言った",
+  "pieces": [
+   "▁",
+   "「你好」と言った"
+  ],
+  "ids": [
+   8,
+   1,
+   0
+  ],
+  "decoded": "<unk>",
+  "reference_ids": [
+   8,
+   1,
+   0
+  ]
+ },
+ {
+  "text": "你好，世界。",
+  "normalized": "▁你好,世界。",
+  "pieces": [
+   "▁",
+   "你好",
+   ",",
+   "世界。"
+  ],
+  "ids": [
+   8,
+   16459,
+   2,
+   1,
+   0
+  ],
+  "decoded": "你好,<unk>",
+  "reference_ids": [
+   8,
+   16459,
+   2,
+   1,
+   0
+  ]
+ },
+ {
+  "text": "русский текст",
+  "normalized": "▁русский▁текст",
+  "pieces": [
+   "▁",
+   "русский",
+   "▁",
+   "текст"
+  ],
+  "ids": [
+   8,
+   1,
+   8,
+   1,
+   0
+  ],
+  "decoded": "<unk> <unk>",
+  "reference_ids": [
+   8,
+   1,
+   8,
+   1,
+   0
+  ]
+ },
+ {
+  "text": "مرحبا بالعالم",
+  "normalized": "▁مرحبا▁بالعالم",
+  "pieces": [
+   "▁",
+   "مرحبا",
+   "▁",
+   "بالعالم"
+  ],
+  "ids": [
+   8,
+   1,
+   8,
+   1,
+   0
+  ],
+  "decoded": "<unk> <unk>",
+  "reference_ids": [
+   8,
+   1,
+   8,
+   1,
+   0
+  ]
+ },
+ {
+  "text": "emoji 😀 test",
+  "normalized": "▁emoji▁😀▁test",
+  "pieces": [
+   "▁",
+   "emo",
+   "ji",
+   "▁",
+   "😀",
+   "▁test"
+  ],
+  "ids": [
+   8,
+   30635,
+   8270,
+   8,
+   1,
+   5896,
+   0
+  ],
+  "decoded": "emoji <unk> test",
+  "reference_ids": [
+   8,
+   30635,
+   8270,
+   8,
+   1,
+   5896,
+   0
+  ]
+ },
+ {
+  "text": "a b c",
+  "normalized": "▁a▁b▁c",
+  "pieces": [
+   "▁a",
+   "▁b",
+   "▁c"
+  ],
+  "ids": [
+   13,
+   2095,
+   2732,
+   0
+  ],
+  "decoded": "a b c",
+  "reference_ids": [
+   13,
+   2095,
+   2732,
+   0
+  ]
+ },
+ {
+  "text": "quote \"inside\" and 'apostrophe'",
+  "normalized": "▁quote▁\"inside\"▁and▁'apostrophe'",
+  "pieces": [
+   "▁quote",
+   "▁\"",
+   "in",
+   "side",
+   "\"",
+   "▁and",
+   "▁'",
+   "a",
+   "pos",
+   "troph",
+   "e",
+   "'"
+  ],
+  "ids": [
+   35316,
+   40,
+   767,
+   13870,
+   480,
+   7,
+   85,
+   88,
+   10375,
+   48007,
+   179,
+   23,
+   0
+  ],
+  "decoded": "quote \"inside\" and 'apostrophe'",
+  "reference_ids": [
+   35316,
+   40,
+   767,
+   13870,
+   480,
+   7,
+   85,
+   88,
+   10375,
+   48007,
+   179,
+   23,
+   0
+  ]
+ },
+ {
+  "text": "dash - hyphen -- double",
+  "normalized": "▁dash▁-▁hyphen▁--▁double",
+  "pieces": [
+   "▁dash",
+   "▁-",
+   "▁",
+   "hy",
+   "phen",
+   "▁--",
+   "▁double"
+  ],
+  "ids": [
+   52972,
+   30,
+   8,
+   19431,
+   48395,
+   266,
+   8603,
+   0
+  ],
+  "decoded": "dash - hyphen -- double",
+  "reference_ids": [
+   52972,
+   30,
+   8,
+   19431,
+   48395,
+   266,
+   8603,
+   0
+  ]
+ },
+ {
+  "text": "slash/a\\b c",
+  "normalized": "▁slash/a\\b▁c",
+  "pieces": [
+   "▁s",
+   "lash",
+   "/",
+   "a",
+   "\\",
+   "b",
+   "▁c"
+  ],
+  "ids": [
+   98,
+   39788,
+   42,
+   88,
+   2144,
+   110,
+   2732,
+   0
+  ],
+  "decoded": "slash/a\\b c",
+  "reference_ids": [
+   98,
+   39788,
+   42,
+   88,
+   2144,
+   110,
+   2732,
+   0
+  ]
+ },
+ {
+  "text": "[中文] (test) {x}",
+  "normalized": "▁[中文]▁(test)▁{x}",
+  "pieces": [
+   "▁[",
+   "中文",
+   "]",
+   "▁(",
+   "test",
+   ")",
+   "▁",
+   "{",
+   "x",
+   "}"
+  ],
+  "ids": [
+   345,
+   21121,
+   393,
+   22,
+   45345,
+   17,
+   8,
+   25302,
+   4348,
+   9893,
+   0
+  ],
+  "decoded": "[中文] (test) {x}",
+  "reference_ids": [
+   345,
+   21121,
+   393,
+   22,
+   45345,
+   17,
+   8,
+   25302,
+   4348,
+   9893,
+   0
+  ]
+ },
+ {
+  "text": "Wi‑Fi enabled",
+  "normalized": "▁Wi‐Fi▁enabled",
+  "pieces": [
+   "▁Wi",
+   "‐",
+   "Fi",
+   "▁enabled"
+  ],
+  "ids": [
+   20139,
+   62639,
+   43903,
+   11145,
+   0
+  ],
+  "decoded": "Wi‐Fi enabled",
+  "reference_ids": [
+   20139,
+   62639,
+   43903,
+   11145,
+   0
+  ]
+ },
+ {
+  "text": "½ ¼ ¾ fractions",
+  "normalized": "▁1⁄2▁1⁄4▁3⁄4▁fractions",
+  "pieces": [
+   "▁1",
+   "⁄",
+   "2",
+   "▁1",
+   "⁄",
+   "4",
+   "▁3",
+   "⁄",
+   "4",
+   "▁fraction",
+   "s"
+  ],
+  "ids": [
+   223,
+   48983,
+   131,
+   223,
+   48983,
+   139,
+   496,
+   48983,
+   139,
+   40955,
+   24,
+   0
+  ],
+  "decoded": "1⁄2 1⁄4 3⁄4 fractions",
+  "reference_ids": [
+   223,
+   48983,
+   131,
+   223,
+   48983,
+   139,
+   496,
+   48983,
+   139,
+   40955,
+   24,
+   0
+  ]
+ },
+ {
+  "text": "～！？：；",
+  "normalized": "▁～!?:;",
+  "pieces": [
+   "▁",
+   "～",
+   "!",
+   "?",
+   ":",
+   ";"
+  ],
+  "ids": [
+   8,
+   43481,
+   50,
+   25,
+   37,
+   27,
+   0
+  ],
+  "decoded": "～!?:;",
+  "reference_ids": [
+   8,
+   43481,
+   50,
+   25,
+   37,
+   27,
+   0
+  ]
+ },
+ {
+  "text": "Tabs\t\tand   spaces",
+  "normalized": "▁Tabs▁and▁spaces",
+  "pieces": [
+   "▁Tab",
+   "s",
+   "▁and",
+   "▁spaces"
+  ],
+  "ids": [
+   45752,
+   24,
+   7,
+   26315,
+   0
+  ],
+  "decoded": "Tabs and spaces",
+  "reference_ids": [
+   45752,
+   24,
+   7,
+   26315,
+   0
+  ]
+ },
+ {
+  "text": "   ",
+  "normalized": "",
+  "pieces": [],
+  "ids": [
+   0
+  ],
+  "decoded": "",
+  "reference_ids": [
+   0
+  ]
+ }
+]

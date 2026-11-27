@@ -102,7 +102,4 @@ object Languages {
         if (src == TARGET_EN || tgt == TARGET_EN) return listOf(src to tgt)
         return listOf(src to TARGET_EN, TARGET_EN to tgt)
     }
-
-    /** 这条路要走几个模型（1 跳 or 2 跳）。 */
-    fun isRelayed(src: String, tgt: String): Boolean = route(src, tgt).size > 1
 }

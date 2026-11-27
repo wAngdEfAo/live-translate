@@ -181,7 +181,14 @@ class OcrService : Service() {
                 Log.w(TAG, "getMediaProjection 返回空，token 已作废")
                 return
             }
-            if (Build.VERSION.SDK_INT >= 34) p.registerCallback(projectionCallback, main)
+            // registerCallback 从 API 21 就有，以前只在 34+ 注册：
+            // 24~33 上系统收回投影后我们依然以为「可用」，于是每屏白跑一次建镜像、
+            // 而且因为 isRunning() 还是 true，界面再也不会提示重新授权
+            try {
+                p.registerCallback(projectionCallback, main)
+            } catch (t2: Throwable) {
+                Log.w(TAG, "注册投影回调失败: " + t2.message)
+            }
             projection = p
 
             Log.d(TAG, "投影就绪（按需开镜像）")
@@ -204,14 +211,19 @@ class OcrService : Service() {
         val p = projection ?: return false
         return try {
             val dm = resources.displayMetrics
+            // 尺寸必须与 AppCore / OverlayService 同源（maximumWindowMetrics 优先）：
+            // 镜像按 displayMetrics 建、区域按窗口度量算，两套坐标系会让行框错位或整块漏译
+            val (sw, sh) = AppCore.screenSize()
+            val w = if (sw > 0) sw else dm.widthPixels
+            val h = if (sh > 0) sh else dm.heightPixels
             val r = ImageReader.newInstance(
                 // 这里用 PixelFormat 是对的：ImageFormat 里没有 RGBA_8888，
                 // ImageReader 接受 PixelFormat.RGBA_8888（与 ImageFormat 的编号体系不同）
-                dm.widthPixels, dm.heightPixels, PixelFormat.RGBA_8888, 1
+                w, h, PixelFormat.RGBA_8888, 1
             )
             val vd = p.createVirtualDisplay(
                 "live-translate-ocr",
-                dm.widthPixels, dm.heightPixels, dm.densityDpi,
+                w, h, dm.densityDpi,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                 r.surface, null, main
             )

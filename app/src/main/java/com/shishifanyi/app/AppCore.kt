@@ -24,9 +24,10 @@ object AppCore {
     @Volatile
     private var lastKey: String = ""
 
-    /** 每次取词批次自增；旧批次的翻译结果一律丢弃，避免盖住新屏幕。 */
-    @Volatile
-    private var gen: Int = 0
+    /** 每次取词批次自增；旧批次的翻译结果一律丢弃，避免盖住新屏幕。
+     *  process() 会被 filterWorker 与主线程（OCR 回调）同时调用，`++gen` 不是原子操作，
+     *  两批可能拿到同一个号 → 旧结果盖掉新屏，所以用原子量。 */
+    private val gen = java.util.concurrent.atomic.AtomicInteger(0)
 
     /** 正在处理中的屏幕指纹；与 lastKey 分开，避免"没画上去却认账"。 */
     @Volatile
@@ -34,6 +35,10 @@ object AppCore {
 
     @Volatile
     private var ocrBusy: Boolean = false
+
+    /** 本次 OCR 的起始时刻；回调丢失时靠它判断「忙碌」是不是僵住了。 */
+    @Volatile
+    private var ocrStartedAt: Long = 0L
 
     @Volatile
     private var lastCaptureAt: Long = 0L
@@ -45,7 +50,14 @@ object AppCore {
     @Volatile
     private var backoffUntil = 0L
 
+    /** 连续几次「整屏一块都没翻成」；模型没下载时屏幕事件会把整批重跑，必须退避。 */
+    @Volatile
+    private var failStreak = 0
+
     private const val MIN_CAPTURE_GAP = 600L
+
+    /** OCR 回调超过这个时间没回来，就认为它不会再回来了。 */
+    private const val OCR_STALE_MS = 6000L
 
     fun init(c: Context) {
         if (app == null) {
@@ -53,6 +65,9 @@ object AppCore {
             Prefs.init(c)
         }
     }
+
+    /** 供引擎层拿应用上下文（模型文件路径需要）。 */
+    fun context(): Context? = app
 
     /** 翻译开关或 OCR 开关变化后，按需启停截屏服务，暂停时不留常驻。 */
     fun syncOcrService() {
@@ -75,20 +90,30 @@ object AppCore {
         pendingKey = ""
     }
 
-    fun screenHeight(): Int {
-        val c = app ?: return 0
-        // 必须和 OverlayService.applyScreenMetrics() 用同一套口径，
-        // 否则分屏 / 手势导航时区域边界与渲染窗口坐标系对不上
+    /**
+     * 屏幕像素尺寸的唯一口径。
+     * 必须先取 maximumWindowMetrics：分屏、折叠屏、带任务栏时 displayMetrics
+     * 与窗口实际可用区域并不相等，OCR 行框和区域过滤一旦各用一套就会错位或漏块。
+     */
+    fun screenSize(): Pair<Int, Int> {
+        val c = app ?: return 0 to 0
         if (android.os.Build.VERSION.SDK_INT >= 30) {
             try {
                 val wm = c.getSystemService(Context.WINDOW_SERVICE) as android.view.WindowManager
                 val b = wm.maximumWindowMetrics.bounds
-                if (b.height() > 0) return b.height()
+                if (b.width() > 0 && b.height() > 0) return b.width() to b.height()
             } catch (ex: Throwable) {
-                Log.w(TAG, "AppCore@70: " + ex.message)
+                Log.w(TAG, "AppCore@82: " + ex.message)
             }
         }
-        return c.resources.displayMetrics.heightPixels
+        val dm = c.resources.displayMetrics
+        return dm.widthPixels to dm.heightPixels
+    }
+
+    fun screenHeight(): Int {
+        // 必须和 OverlayService.applyScreenMetrics() 用同一套口径，
+        // 否则分屏 / 手势导航时区域边界与渲染窗口坐标系对不上
+        return screenSize().second
     }
 
     /** 处理区域的上下边界（相对屏幕顶部）。 */
@@ -132,7 +157,11 @@ object AppCore {
         )
 
         // 整屏基本是中文：本来就没有可翻内容，不该退避（否则切到英文页要等 5 秒），也不必走 OCR
-        val mostlyChinese = stats.chinese > 0 && stats.chinese * 2 >= stats.total
+        // 分母只算「在区域内、过了尺寸与长度基本检查」的块。用 total 会把出区、太小、
+        // 太短的噪声算进去，中文页判不出「整屏中文」，于是每 600ms 拉起一次截屏镜像白白耗电
+        val usable = stats.chinese + stats.kept + stats.script +
+            stats.lowLetters + stats.url + stats.masked
+        val mostlyChinese = stats.chinese > 0 && stats.chinese * 2 >= usable
 
         if (filtered.isEmpty()) {
             if (mostlyChinese) {
@@ -227,10 +256,17 @@ object AppCore {
     private fun useOcr(): Boolean = Prefs.ocrFallback && OcrBridge.available()
 
     private fun captureOcr(topY: Int, maxY: Int) {
-        if (ocrBusy) return
         val now = android.os.SystemClock.elapsedRealtime()
+        if (ocrBusy) {
+            // OCR 服务中途死掉（系统回收 / 用户撤销投影）时回调永远不会来，
+            // 没有超时兜底就会永久卡在「忙碌」，OCR 静默失效直到进程重启
+            if (now - ocrStartedAt < OCR_STALE_MS) return
+            Log.w(TAG, "OCR 回调超时未归，复位忙碌标记")
+            ocrBusy = false
+        }
         if (now - lastCaptureAt < MIN_CAPTURE_GAP) return
         lastCaptureAt = now
+        ocrStartedAt = now
         ocrBusy = true
         OcrBridge.captureBlocks { list ->
             ocrBusy = false
@@ -252,7 +288,7 @@ object AppCore {
         // 两者都不等于当前屏才需要再跑——否则截断后同一屏永远不会重试
         if (key == lastKey || key == pendingKey) return
         pendingKey = key
-        val myGen = ++gen
+        val myGen = gen.incrementAndGet()
 
         worker.execute {
             // 自动检测：整屏文字先判语言，再逐块翻
@@ -276,7 +312,7 @@ object AppCore {
             if (src == tgt) {
                 Log.d(TAG, "源语言与目标相同（$src），跳过并清屏")
                 main.post {
-                    if (gen == myGen) OverlayService.showBlocks(emptyList())
+                    if (gen.get() == myGen) OverlayService.showBlocks(emptyList())
                 }
                 return@execute
             }
@@ -295,7 +331,7 @@ object AppCore {
 
             val pairs = ArrayList<Pair<TextBlock, String>>(blocks.size)
             for (b in blocks) {
-                if (gen != myGen) break
+                if (gen.get() != myGen) break
                 if (android.os.SystemClock.elapsedRealtime() > deadline) break
                 // 目标是英语时，逐块判断这块是不是本来就英文；是就不翻，避免"英译英"盖一层块。
                 // 必须逐块：一屏里中英西混排时，整屏判定只会按多数语言一刀切。
@@ -304,7 +340,19 @@ object AppCore {
                     continue
                 }
                 // 命中缓存的不再调用模型
-                val hit = Translator.peek(src, tgt, b.text)
+                // 拉丁字母行（日/韩界面里的英文标签）走英语直连：
+                // 把英文喂进 ja→en 模型只是白白多一跳，还掉质量
+                val effSrc =
+                    if (src != Languages.TARGET_EN && allAsciiLetters(b.text)) Languages.TARGET_EN
+                    else src
+                if (effSrc == tgt) {
+                    // 本来就是目标语言（自动检测失败时常见），画上去只会英译英
+                    skipped++
+                    continue
+                }
+                // 引擎按设置挑：默认 ML Kit；选了高精度且是英⇄中长句时才用 ONNX
+                val engine = Engines.pick(effSrc, tgt, b.text)
+                val hit = engine.peek(effSrc, tgt, b.text)
                 if (hit != null && hit.isNotBlank()) {
                     pairs.add(Pair(b, hit))
                     continue
@@ -312,14 +360,15 @@ object AppCore {
                 var zh = ""
                 var ok = false
                 val latch = CountDownLatch(1)
-                Translator.translateWith(src, tgt, b.text) { err, t ->
+                engine.translate(effSrc, tgt, b.text) { err, t ->
                     if (err == null && t.isNotBlank()) {
                         zh = t
                         ok = true
                     }
                     latch.countDown()
                 }
-                latch.await(2, TimeUnit.SECONDS)
+                // 高精度单句可能要一两秒，给它更长的等待；ML Kit 保持原来的 2 秒
+                latch.await(if (engine === OnnxEngine) 6000L else 2L, TimeUnit.SECONDS)
                 if (ok) {
                     pairs.add(Pair(b, zh))
                 } else {
@@ -335,14 +384,32 @@ object AppCore {
             )
             main.post {
                 try {
-                    if (gen != myGen) return@post
+                    if (gen.get() != myGen) return@post
                     if (!Prefs.translating) return@post
                     if (pairs.isEmpty()) {
                         // 这一屏什么都没翻出来：把旧块清掉，
                         // 否则刷新/滚动后旧译文会一直停在屏幕上
                         OverlayService.showBlocks(emptyList())
+                        if (failed > 0) {
+                            // 全失败（常见：模型还没下载）。不写 lastKey，恢复后还能重试；
+                            // 但必须退避，否则每个无障碍事件都会再跑满一次 8 秒预算
+                            failStreak++
+                            if (failStreak >= 2) {
+                                backoffUntil =
+                                    android.os.SystemClock.elapsedRealtime() + 5000L
+                                Log.d(
+                                    TAG,
+                                    "连续 " + failStreak + " 次整屏翻译失败，暂停取词 5 秒"
+                                )
+                            }
+                        } else {
+                            // 全是「本来就是目标语言」被跳过：这一屏确实处理完了
+                            failStreak = 0
+                            lastKey = key
+                        }
                         return@post
                     }
+                    failStreak = 0
                     OverlayService.showBlocks(pairs)
                     // 真的画上去才算这一屏处理过
                     lastKey = key

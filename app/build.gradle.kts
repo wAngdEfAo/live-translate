@@ -21,8 +21,8 @@ android {
         applicationId = "com.shishifanyi.app"
         minSdk = 24
         targetSdk = 36
-        versionCode = 61
-        versionName = "5.3.7"
+        versionCode = 64
+        versionName = "5.4.0"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")
@@ -91,4 +91,11 @@ dependencies {
     implementation("com.google.mlkit:translate:17.0.3")
     implementation("com.google.mlkit:text-recognition:16.0.1")
     implementation("com.google.mlkit:language-id:17.0.6")
+
+    // 高精度引擎（可选）：ONNX Runtime + 自带 int8 Marian 模型，模型包另行下载/导入
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
+
+    testImplementation("junit:junit:4.13.2")
+    // Android 的 org.json 在 JVM 单测里是空壳，这里换成真实现
+    testImplementation("org.json:json:20240303")
 }

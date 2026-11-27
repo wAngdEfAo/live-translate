@@ -47,11 +47,27 @@ object ModelRegistry {
      * 官方清单以整个下载包的 sha256 为准，所以对单个文件无法核对；
      * 这里只做"结构完整"检查，hash 由调用方另行判定。
      */
+    /**
+     * 判断导入目录是否是结构完整的模型目录。
+     * 以前硬编码「translation_model.pb + 任意 .bipe」，扩展名一换就整包导入静默失效
+     * （只留一行日志），所以这里放宽成按已知载荷扩展名匹配。
+     */
     fun looksComplete(dir: File): Boolean {
-        val pb = File(dir, "translation_model.pb")
-        val hasGb = dir.walkTopDown().any { it.isFile && it.name.endsWith(".bipe") }
-        return pb.exists() && hasGb
+        if (!dir.isDirectory) return false
+        if (File(dir, "translation_model.pb").exists()) return true
+        var hit: String? = null
+        dir.walkTopDown().forEach { f ->
+            if (hit != null || !f.isFile) return@forEach
+            val n = f.name.lowercase()
+            if (f.length() > 1024L && PAYLOAD_EXT.any { n.endsWith(it) }) hit = f.name
+        }
+        if (hit == null) Log.d(TAG, "目录结构不完整，跳过登记: " + dir.name)
+        return hit != null
     }
+
+    /** ML Kit 各版本用过的模型载荷扩展名；新格式不认识时按日志加一项即可。 */
+    private val PAYLOAD_EXT =
+        listOf(".bipe", ".pb", ".tflite", ".binarypb", ".model", ".bin", ".dat")
 
     /**
      * 为某个模型目录补写 ML Kit 的登记。

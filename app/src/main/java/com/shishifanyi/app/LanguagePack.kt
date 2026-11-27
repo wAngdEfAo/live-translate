@@ -202,25 +202,34 @@ object LanguagePack {
             return
         }
         val code = models[index]
-        val model = try {
-            TranslateRemoteModel.Builder(code).build()
-        } catch (t: Throwable) {
-            busy = false
-            cb(false, "模型创建失败：" + (t.message ?: code))
-            return
-        }
-        RemoteModelManager.getInstance().download(model, cond)
-            .addOnSuccessListener {
+        // 已经下过的模型直接跳过：中转目标是共享的（选中文时每条路径都带 zh），
+        // 无条件 download 会让用户每次都白等一遍网络
+        isModelDownloaded(code) { has ->
+            if (has) {
+                Log.d(TAG, "模型已存在，跳过下载: " + code)
                 downloadStep(src, tgt, models, index + 1, cond, cb)
+                return@isModelDownloaded
             }
-            .addOnFailureListener { e ->
+            val model = try {
+                TranslateRemoteModel.Builder(code).build()
+            } catch (t: Throwable) {
                 busy = false
-                cb(false, "下载失败（" + Languages.name(code) + "）：" + (e.message ?: "网络错误"))
+                cb(false, "模型创建失败：" + (t.message ?: code))
+                return@isModelDownloaded
             }
-            .addOnCanceledListener {
-                busy = false
-                cb(false, "下载已取消")
-            }
+            RemoteModelManager.getInstance().download(model, cond)
+                .addOnSuccessListener {
+                    downloadStep(src, tgt, models, index + 1, cond, cb)
+                }
+                .addOnFailureListener { e ->
+                    busy = false
+                    cb(false, "下载失败（" + Languages.name(code) + "）：" + (e.message ?: "网络错误"))
+                }
+                .addOnCanceledListener {
+                    busy = false
+                    cb(false, "下载已取消")
+                }
+        }
     }
 
     /** 删除某语言的模型（英语是枢纽，不提供删除）。 */

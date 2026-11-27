@@ -42,6 +42,21 @@ object Prefs {
         get() = p.getBoolean("accurate_mode", false)
         set(v) = p.edit().putBoolean("accurate_mode", v).apply()
 
+    /** 翻译引擎：mlkit（默认，实时）/ onnx（高精度，英⇄中，慢）。 */
+    var engine: String
+        get() = p.getString("engine", "mlkit") ?: "mlkit"
+        set(v) = p.edit().putString("engine", v).apply()
+
+    /** 高精度只用于长句；短 UI 文案继续走 ML Kit，避免实时路径被拖慢。 */
+    var onnxLongOnly: Boolean
+        get() = p.getBoolean("onnx_long_only", true)
+        set(v) = p.edit().putBoolean("onnx_long_only", v).apply()
+
+    /** 「长句」的字符阈值。 */
+    var onnxMinChars: Int
+        get() = p.getInt("onnx_min_chars", 24)
+        set(v) = p.edit().putInt("onnx_min_chars", v.coerceIn(1, 400)).apply()
+
     /** 是否曾经成功授权过屏幕捕获；用于区分"从未授权"和"授权失效"。 */
     var ocrEverGranted: Boolean
         get() = p.getBoolean("ocr_ever_granted", false)
