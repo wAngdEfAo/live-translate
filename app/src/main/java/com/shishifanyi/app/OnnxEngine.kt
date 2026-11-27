@@ -282,6 +282,9 @@ object OnnxEngine : TransEngine {
             var prevTok = -1
             var sameRun = 0
             while (len < prefix.size) {
+                // 内存压力要释放会话：不能等 96 步跑完（积压时那正是内存最紧的时刻）。
+                // 抛出去让上层拿到错误并回退 ML Kit，同时 finally 里就能关会话。
+                if (releasePending) throw IllegalStateException("会话被内存压力释放")
                 val buf = LongArray(len) { prefix[it].toLong() }
                 val dt = OnnxTensor.createTensor(e, LongBuffer.wrap(buf), longArrayOf(1, len.toLong()))
                 var next = -1

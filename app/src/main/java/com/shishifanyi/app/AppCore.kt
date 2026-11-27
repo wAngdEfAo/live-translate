@@ -78,6 +78,19 @@ object AppCore {
         if (app == null) {
             app = c.applicationContext
             Prefs.init(c)
+            // 上次替换模型目录时如果在 rename 与 delete 之间被杀，会留下 ~147MB 的
+            // packs/<key>.old-* 目录，一直算进存储占用。启动时清一次（导入时也会清）。
+            try {
+                Thread {
+                    try {
+                        EnginePack.sweepOrphans(c.applicationContext)
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "启动清理残留失败: " + t.message)
+                    }
+                }.start()
+            } catch (t: Throwable) {
+                Log.w(TAG, "启动清理线程失败: " + t.message)
+            }
         }
     }
 
@@ -476,13 +489,13 @@ object AppCore {
                     latch.countDown()
                 }
                 // 高精度单句可能要一两秒，给它更长的等待；ML Kit 保持原来的 2 秒
-                latch.await(if (engine === OnnxEngine) 6000L else 2L, TimeUnit.SECONDS)
+                val finished = latch.await(if (engine === OnnxEngine) 6000L else 2L, TimeUnit.SECONDS)
                 if (!ok && engine === OnnxEngine) {
-                    // 这句在高精度上超时/失败了：记一笔，接下来两分钟不再拿它试 ONNX。
-                    // 不做这件事的话，截断重试每轮都会从第 0 块重来，每轮先白等 6 秒。
-                    OnnxEngine.markSlow(b.text)
-                    // 高精度失败（模型损坏 / 会话加载不出来 / 超时）不能让这一块留空：
-                    // 退回 ML Kit 再试一次。这是界面与 README 都承诺的行为。
+                    // 只有「等到超时」才进冷却。会话被内存压力关掉、模型被删、加载失败
+                    // 都是错误路径，下一句应当重新加载再试，而不是让接着两分钟所有长句
+                    // 静默降级成 ML Kit（5.5.7 里 releaseUnderPressure 正好会踩到）。
+                    if (!finished) OnnxEngine.markSlow(b.text)
+                    // 高精度失败不能让这一块留空：退回 ML Kit 再试一次。
                     val fallback = CountDownLatch(1)
                     MlKitEngine.translate(effSrc, tgt, b.text) { err, t ->
                         if (err == null && t.isNotBlank()) {
@@ -492,7 +505,9 @@ object AppCore {
                         fallback.countDown()
                     }
                     fallback.await(2, TimeUnit.SECONDS)
-                    if (ok) Log.d(TAG, "高精度失败，已回退 ML Kit")
+                    if (ok) {
+                        Log.d(TAG, if (finished) "高精度报错，已回退 ML Kit" else "高精度超时，已回退 ML Kit")
+                    }
                 }
                 if (ok) {
                     pairs.add(Pair(b, zh))

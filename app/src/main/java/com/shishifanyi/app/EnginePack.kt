@@ -58,14 +58,23 @@ object EnginePack {
 
     fun pairDir(ctx: Context, key: String): File = File(packsDir(ctx), key)
 
-    /** 清掉上次替换中断留下的 `<key>.old-<ts>` 目录（147MB 一份，会被算进占用、也会被打进导出包）。 */
+    /**
+     * 清掉上次替换中断留下的 `<key>.old-<ts>` 目录（147MB 一份，会被算进占用、也会被打进导出包）。
+     *
+     * 注意：`.staging-*` 是**正在进行**的导入用的临时目录，这里只清超过 30 分钟没动过的，
+     * 否则会跟 UI 导入 / 下载后导入互删。同一个进程里两条导入路径还靠 [importZip] 的锁串行化。
+     */
     fun sweepOrphans(ctx: Context) {
         try {
             val dir = packsDir(ctx)
+            val now = System.currentTimeMillis()
             dir.listFiles()?.forEach { f ->
-                if (f.isDirectory && (f.name.startsWith(".") || f.name.contains(".old-"))) {
-                    if (f.deleteRecursively()) Log.d(TAG, "清理残留目录: " + f.name)
-                }
+                if (!f.isDirectory) return@forEach
+                val isOld = f.name.contains(".old-")
+                val isStaging = f.name.startsWith(".staging-")
+                if (!isOld && !isStaging) return@forEach
+                if (isStaging && now - f.lastModified() < 30 * 60_000L) return@forEach
+                if (f.deleteRecursively()) Log.d(TAG, "清理残留目录: " + f.name)
             }
         } catch (t: Throwable) {
             Log.w(TAG, "清理残留失败: " + t.message)
@@ -190,6 +199,7 @@ object EnginePack {
      * 从 zip 导入模型包：解到临时目录 → 校验 → 整体替换。
      * @return (成功, 给用户看的说明)
      */
+    @Synchronized
     fun importZip(ctx: Context, open: () -> java.io.InputStream?): Pair<Boolean, String> {
         val rootDir = root(ctx)
         if (!rootDir.exists() && !rootDir.mkdirs()) return false to "无法创建模型目录"

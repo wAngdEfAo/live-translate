@@ -445,10 +445,12 @@ class OcrService : Service() {
     }
 
     /**
-     * 采样判断内容区域是不是「一片纯黑」。两个条件缺一不可：
+     * 采样判断内容区域是不是「一片纯黑」。
+     * 三个条件同时成立才算：
      *  - 中间 80% 区域亮度极差很小（避开状态栏/导航栏，FLAG_SECURE 只涂黑应用内容）
-     *  - 且整体很暗（亮度上限 ≤ 48）—— 纯白/浅色空白页同样"纯色"，
-     *    只按极差判断会把它们误报成安全窗口
+     *  - 整体极暗（≤ 10）：深色主题的空笔记页是 #121212（亮度 18），全屏深色视频通常也有
+     *    微弱渐变，都会被这条挡掉，不会误报成「禁止截屏」
+     *  - 上层还要求 OCR 也读不出任何文字
      */
     private fun looksBlank(bmp: android.graphics.Bitmap): Boolean {
         return try {
@@ -472,7 +474,7 @@ class OcrService : Service() {
                 }
                 x += stepX
             }
-            max - min <= 6 && max <= 48
+            max - min <= 4 && max <= 10
         } catch (t: Throwable) {
             false
         }

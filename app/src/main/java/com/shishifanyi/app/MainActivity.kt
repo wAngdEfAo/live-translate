@@ -361,6 +361,7 @@ class MainActivity : Activity() {
         secAccessDesc = null
         secAppearDesc = null
         secAboutDesc = null
+        transSummaryBase = ""
         langRowBusy = false
     }
 
