@@ -162,26 +162,53 @@ object AppCore {
         process(filtered)
     }
 
-    /**
-     * 这一块是不是已经是目标语言（目前只用于目标=英语）。
-     *
-     * 只看**非 ASCII 字母**：西语的 á、法语的 é、德语的 ü 都在这里被排除。
-     * 不能看"任何非 ASCII 字符"——英文里的破折号 —、弯引号 ' ' 也是非 ASCII，
-     * 那样会把整段英文误判成"不是英文"照翻一遍。
-     * 剩下全 ASCII 字母的才交给 ML Kit 确认，避免把没有变音符号的西语当成英文漏翻。
-     */
-    private fun blockAlreadyTarget(text: String, tgt: String): Boolean {
+    /** 全 ASCII 字母（无变音符号）才需要额外确认，避免把西语/法语误当英文。 */
+    private fun allAsciiLetters(text: String): Boolean {
         for (c in text) {
             if (c.isLetter() && c.code > 127) return false
         }
-        val latch = CountDownLatch(1)
-        var hit = false
-        LanguageDetector.detectStrict(text) { lang ->
-            hit = (lang == tgt)
-            latch.countDown()
+        return true
+    }
+
+    /** 目标语言判定结果缓存：句 → 语言码（null 表示识别失败）。 */
+    private val detectCache = object : LinkedHashMap<String, String?>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String?>?): Boolean =
+            size > 256
+    }
+
+    @Synchronized
+    private fun cachedLang(text: String): Pair<Boolean, String?> {
+        return if (detectCache.containsKey(text)) true to detectCache[text] else false to null
+    }
+
+    @Synchronized
+    private fun rememberLang(text: String, lang: String?) {
+        detectCache[text] = lang
+    }
+
+    /**
+     * 整屏批量判定：之前逐块 await(300ms)，30 块最坏 9 秒，超出 8 秒预算后
+     * 后面的块直接被 break 掉。改成一次性并发提交 + 总预算等待 + 结果缓存。
+     */
+    private fun detectBatch(texts: List<String>, budgetMs: Long): Map<String, String?> {
+        val result = HashMap<String, String?>(texts.size * 2)
+        val pending = ArrayList<String>(texts.size)
+        for (t in texts) {
+            val (has, lang) = cachedLang(t)
+            if (has) result[t] = lang else pending.add(t)
         }
-        latch.await(300, TimeUnit.MILLISECONDS)
-        return hit
+        if (pending.isEmpty()) return result
+
+        val latch = CountDownLatch(pending.size)
+        for (t in pending) {
+            LanguageDetector.detectStrict(t) { lang ->
+                synchronized(result) { result[t] = lang }
+                if (lang != null) rememberLang(t, lang)
+                latch.countDown()
+            }
+        }
+        latch.await(budgetMs, TimeUnit.MILLISECONDS)
+        return result
     }
 
     private fun useOcr(): Boolean = Prefs.ocrFallback && OcrBridge.available()
@@ -244,15 +271,22 @@ object AppCore {
             val deadline = t0 + 8000L
             var failed = 0
             var skipped = 0
+            // 目标=英语且源不是英语时，先整屏批量判定哪些块本来就是英文
+            val needTargetCheck = tgt == Languages.TARGET_EN && src != Languages.TARGET_EN
+            val detected: Map<String, String?> = if (needTargetCheck) {
+                val cands = blocks.map { it.text }.filter { allAsciiLetters(it) }.distinct()
+                detectBatch(cands, 1200L)
+            } else {
+                emptyMap()
+            }
+
             val pairs = ArrayList<Pair<TextBlock, String>>(blocks.size)
             for (b in blocks) {
                 if (gen != myGen) break
                 if (android.os.SystemClock.elapsedRealtime() > deadline) break
                 // 目标是英语时，逐块判断这块是不是本来就英文；是就不翻，避免"英译英"盖一层块。
                 // 必须逐块：一屏里中英西混排时，整屏判定只会按多数语言一刀切。
-                if (tgt == Languages.TARGET_EN && src != Languages.TARGET_EN &&
-                    blockAlreadyTarget(b.text, tgt)
-                ) {
+                if (needTargetCheck && allAsciiLetters(b.text) && detected[b.text] == tgt) {
                     skipped++
                     continue
                 }

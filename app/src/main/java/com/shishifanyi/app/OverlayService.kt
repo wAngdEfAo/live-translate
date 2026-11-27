@@ -156,7 +156,6 @@ class OverlayService : Service() {
 
     /** 悬浮窗原点在屏幕上的 y 偏移（状态栏等内缩），用来把矩形对回去。 */
     private var insetY = 0
-    private var insetReady = false
     private var lastBlocks: List<Pair<TextBlock, String>> = emptyList()
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -349,7 +348,6 @@ class OverlayService : Service() {
                 val loc = IntArray(2)
                 row.getLocationOnScreen(loc)
                 insetY = loc[1] - (regionH - dp(6f))
-                insetReady = true
                 // 把分界线挪回真正的区域边界
                 val rp = row.layoutParams as WindowManager.LayoutParams
                 rp.y = (regionH - dp(6f) - insetY).coerceAtLeast(0)

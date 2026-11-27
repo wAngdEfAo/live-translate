@@ -623,7 +623,8 @@ class MainActivity : Activity() {
                     val langs = ModelRegistry.langsOf(dirName)
                     if (langs != null) {
                         val pair = langs.first + "_" + langs.second
-                        val hash = ModelRegistry.officialHash(this, pair)
+                        val dir = File(modelRoot(), dirName)
+                        val hash = ModelRegistry.officialHash(this, pair, ModelRegistry.dirBytes(dir))
                         if (ModelRegistry.register(this, dirName, hash)) registered++
                     }
                 }
@@ -632,7 +633,13 @@ class MainActivity : Activity() {
                     storageSize?.postDelayed({ refreshStorage() }, 300L)
                     packState?.text = "校验中"
                     packState?.setTextColor(color(R.color.accent))
-                    LanguagePack.verify(Prefs.srcLang, Prefs.tgtLang) { ok ->
+                    // auto 时没有具体源语言，用刚导入的目录推断一条实际路径来校验
+                    val verifySrc = if (Prefs.srcLang == "auto") {
+                        ModelRegistry.localModelDirs(this)
+                            .mapNotNull { ModelRegistry.langsOf(it)?.first }
+                            .firstOrNull { it != Prefs.tgtLang } ?: "en"
+                    } else Prefs.srcLang
+                    LanguagePack.verify(verifySrc, Prefs.tgtLang) { ok ->
                         runOnUiThread {
                             packState?.text = if (ok) "已就绪" else "导入未生效"
                             packState?.setTextColor(color(if (ok) R.color.ok else R.color.warn))
@@ -1116,6 +1123,7 @@ class MainActivity : Activity() {
     private fun finishRefresh() {
         refreshStorage()
         refreshLangRows()
+        hintOcrReauthIfNeeded()
 
         startSwitch?.isChecked = Prefs.translating
 
@@ -1199,6 +1207,17 @@ class MainActivity : Activity() {
         }
         OverlayService.start(this)
         showBtnRef?.postDelayed({ refresh() }, 300L)
+    }
+
+    private var ocrHintShown = false
+
+    /** OCR 开关打开但授权已失效（服务被回收 / token 用掉）时，明确提示一次。 */
+    private fun hintOcrReauthIfNeeded() {
+        if (!Prefs.ocrFallback) return
+        if (OcrService.hasPermission() || OcrService.isRunning()) return
+        if (ocrHintShown) return
+        ocrHintShown = true
+        toast("OCR 授权已失效，把「OCR 兜底」关掉再打开即可重新授权")
     }
 
     private fun ensureOcrPermission() {

@@ -96,15 +96,52 @@ object TextPipeline {
     }
 
     /** 该行是否属于当前源语言。 */
+    // ---- 各文字区间判定：语言码必须映射到它真正使用的文字 ----
+
+    private fun hasCjk(s: String) = s.any { it in '\u4e00'..'\u9fff' }
+    private fun hasKana(s: String) = s.any { it in '\u3040'..'\u30ff' }
+    private fun hasHangul(s: String) = s.any { it in '\uac00'..'\ud7af' }
+    private fun hasCyrillic(s: String) = s.any { it in '\u0400'..'\u04ff' }
+    private fun hasGreek(s: String) = s.any { it in '\u0370'..'\u03ff' || it in '\u1f00'..'\u1fff' }
+    private fun hasHebrew(s: String) = s.any { it in '\u0590'..'\u05ff' }
+    private fun hasArabic(s: String) = s.any { it in '\u0600'..'\u06ff' || it in '\u0750'..'\u077f' }
+    private fun hasThai(s: String) = s.any { it in '\u0e00'..'\u0e7f' }
+    private fun hasDevanagari(s: String) = s.any { it in '\u0900'..'\u097f' }
+    private fun hasBengali(s: String) = s.any { it in '\u0980'..'\u09ff' }
+    private fun hasGujarati(s: String) = s.any { it in '\u0a80'..'\u0aff' }
+    private fun hasTamil(s: String) = s.any { it in '\u0b80'..'\u0bff' }
+    private fun hasTelugu(s: String) = s.any { it in '\u0c00'..'\u0c7f' }
+    private fun hasKannada(s: String) = s.any { it in '\u0c80'..'\u0cff' }
+    private fun hasGeorgian(s: String) = s.any { it in '\u10a0'..'\u10ff' }
+    private fun hasArmenian(s: String) = s.any { it in '\u0530'..'\u058f' }
+
+    /**
+     * 该行是否属于当前源语言。
+     * 之前只放行 6 种文字，其余一律套拉丁正则，导致中文/希腊/希伯来/
+     * 格鲁吉亚/印度诸文/波斯/乌尔都等整屏被判为"脚本不符"丢弃。
+     */
     private fun scriptOk(line: String, src: String): Boolean {
         if (src == "auto") return true
         return when (src) {
-            "ja" -> line.any { it in '\u3040'..'\u30ff' } || line.any { it in '\u4e00'..'\u9fff' }
-            "ko" -> line.any { it in '\uac00'..'\ud7af' }
-            "ru" -> line.any { it in '\u0400'..'\u04ff' }
-            "ar" -> line.any { it in '\u0600'..'\u06ff' }
-            "th" -> line.any { it in '\u0e00'..'\u0e7f' }
-            "hi" -> line.any { it in '\u0900'..'\u097f' }
+            "zh" -> hasCjk(line)
+            "ja" -> hasKana(line) || hasCjk(line)
+            "ko" -> hasHangul(line) || hasCjk(line)
+            // 西里尔
+            "ru", "uk", "be", "bg", "mk" -> hasCyrillic(line)
+            "el" -> hasGreek(line)
+            "iw" -> hasHebrew(line)
+            "ka" -> hasGeorgian(line)
+            // 阿拉伯字母（波斯、乌尔都同用）
+            "ar", "fa", "ur" -> hasArabic(line)
+            "th" -> hasThai(line)
+            // 印度诸文
+            "hi", "mr" -> hasDevanagari(line)
+            "bn" -> hasBengali(line)
+            "gu" -> hasGujarati(line)
+            "ta" -> hasTamil(line)
+            "te" -> hasTelugu(line)
+            "kn" -> hasKannada(line)
+            // 其余为拉丁语系
             else -> wordRe.findAll(line).count() >= 2
         }
     }
@@ -168,8 +205,8 @@ object TextPipeline {
                 continue
             }
 
-            // 本来就是中文的，不用翻
-            if (src != "ja" && src != "ko") {
+            // 源语言本身是中日韩时，中文/汉字行正是待翻内容，不能当"已是中文"丢掉
+            if (src != "ja" && src != "ko" && src != "zh") {
                 val cjk = cjkRe.findAll(line).count()
                 if (cjk > 0 && cjk * 2 >= letters) {
                     if (stats != null) {

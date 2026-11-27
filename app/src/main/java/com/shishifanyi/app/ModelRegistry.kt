@@ -88,24 +88,42 @@ object ModelRegistry {
      * 索引随 mlkit translate 库一起落在 res/raw，这里运行时找不到资源，
      * 因此改用随 App 内置的副本（见 assets 说明）。
      */
-    fun officialHash(ctx: Context, langPair: String): String? {
+    /**
+     * 按导入目录的实际体积挑选 PKG_HIGH / PKG_LOW 变体，再取其 HASH。
+     * 两档同一语言对的 HASH 与体积都不同，固定取 HIGH 会把 LOW 包登记成损坏。
+     * @param localBytes 导入目录的总字节数；传 0 时退回 HIGH。
+     */
+    fun officialHash(ctx: Context, langPair: String, localBytes: Long = 0L): String? {
         return try {
             ctx.assets.open("translate_models_metadata.json").use { ins ->
                 val json = JSONObject(ins.bufferedReader().readText())
-                // 不能遍历 json.keys()：Android 的 JSONObject 内部是 HashMap，顺序不保证。
-                // 同一语言对在 PKG_HIGH / PKG_LOW 里 HASH 完全不同（27 个语言对全部如此），
-                // 取错变体会把 ML Kit 的模型判成损坏。这里按固定顺序找，并记录实际取的是哪个包。
+                var best: Pair<String, Long>? = null   // hash to DL_SZ
+                var bestDiff = Long.MAX_VALUE
+
                 for (pkg in PKG_ORDER) {
                     val group = json.optJSONObject(pkg) ?: continue
                     val entry = group.optJSONObject(langPair) ?: continue
                     val h = entry.optString("HASH", "")
-                    if (h.isNotEmpty()) {
-                        Log.d(TAG, "officialHash($langPair) 取自 $pkg")
+                    if (h.isEmpty()) continue
+                    val dl = entry.optLong("DL_SZ", 0L)
+                    if (localBytes <= 0L) {
+                        Log.d(TAG, "officialHash($langPair) 无体积信息，取自 $pkg")
                         return h
                     }
+                    val diff = kotlin.math.abs(dl - localBytes)
+                    if (diff < bestDiff) {
+                        bestDiff = diff
+                        best = h to dl
+                    }
                 }
+                if (best == null) return null
+                Log.d(
+                    TAG,
+                    "officialHash($langPair) 本地 " + localBytes + "B 匹配 DL_SZ=" + best.second +
+                        "B（差 " + bestDiff + "B）"
+                )
+                best.first
             }
-            null
         } catch (t: Throwable) {
             Log.w(TAG, "读官方索引失败: " + t.message)
             null
@@ -114,4 +132,13 @@ object ModelRegistry {
 
     /** 变体优先级：高配包优先，没有再退到低配包。顺序写死，不看 JSON 遍历顺序。 */
     private val PKG_ORDER = listOf("PKG_HIGH", "PKG_LOW")
+
+    /** 目录总字节数，用于匹配官方 DL_SZ。 */
+    fun dirBytes(dir: File): Long {
+        if (!dir.exists()) return 0L
+        if (dir.isFile) return dir.length()
+        var sum = 0L
+        dir.listFiles()?.forEach { sum += dirBytes(it) }
+        return sum
+    }
 }

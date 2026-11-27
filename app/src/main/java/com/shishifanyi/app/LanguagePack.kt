@@ -70,14 +70,25 @@ object LanguagePack {
         clients.clear()
     }
 
-    /** 哪条路径已经确认就绪（"src-tgt"）。用字符串而不是布尔，避免切换语言后判断错。 */
-    @Volatile
-    private var readyKey: String = ""
+    /**
+     * 已确认就绪的语言路径集合。
+     * 之前是单个字符串槽：并发检查多个语言时，最后完成的那个覆盖掉别人的结果，
+     * 导致 isReadyCached 基本失效、每次回到界面都要重新问 ML Kit。
+     */
+    private val readyKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
-    fun isReadyCached(src: String, tgt: String): Boolean = readyKey == key(src, tgt)
+    fun isReadyCached(src: String, tgt: String): Boolean = readyKeys.contains(key(src, tgt))
+
+    fun markReady(src: String, tgt: String) {
+        readyKeys.add(key(src, tgt))
+    }
 
     fun clearReady() {
-        readyKey = ""
+        readyKeys.clear()
+    }
+
+    fun clearReady(src: String, tgt: String) {
+        readyKeys.remove(key(src, tgt))
     }
 
     @Volatile
@@ -143,7 +154,7 @@ object LanguagePack {
                 if (!downloaded) ok = false
                 left--
                 if (left == 0) {
-                    if (ok) readyKey = key(src, tgt) else clearReady()
+                    if (ok) markReady(src, tgt) else clearReady(src, tgt)
                     cb(ok)
                 }
             }
@@ -181,7 +192,7 @@ object LanguagePack {
     ) {
         if (index >= models.size) {
             busy = false
-            readyKey = key(src, tgt)
+            markReady(src, tgt)
             releaseAll()
             cb(true, "已就绪")
             return

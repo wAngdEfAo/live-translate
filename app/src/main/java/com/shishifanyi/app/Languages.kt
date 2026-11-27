@@ -4,12 +4,12 @@ package com.shishifanyi.app
  * ML Kit 在本地支持的 59 种语言，以及这个 App 的两个目标语言。
  *
  * 排序原则：常用语言在前，保证老用户升级后位置不变；其余按字母序补在后面。
- * [rtl] 用于排版：阿拉伯语 / 希伯来语 / 波斯语 / 乌尔都语 是右起文字，
+
  * 混排时要单独处理，否则译文块会左右颠倒。
  */
 object Languages {
 
-    data class Lang(val code: String, val name: String, val rtl: Boolean = false)
+    data class Lang(val code: String, val name: String)
 
     /** 只翻成这两种。 */
     const val TARGET_ZH = "zh"
@@ -28,7 +28,7 @@ object Languages {
         Lang("it", "意大利语"),
         Lang("th", "泰语"),
         Lang("vi", "越南语"),
-        Lang("ar", "阿拉伯语", rtl = true),
+        Lang("ar", "阿拉伯语"),
         // 本次补齐
         Lang("af", "南非荷兰语"),
         Lang("be", "白俄罗斯语"),
@@ -41,7 +41,7 @@ object Languages {
         Lang("el", "希腊语"),
         Lang("eo", "世界语"),
         Lang("et", "爱沙尼亚语"),
-        Lang("fa", "波斯语", rtl = true),
+        Lang("fa", "波斯语"),
         Lang("fi", "芬兰语"),
         Lang("ga", "爱尔兰语"),
         Lang("gl", "加利西亚语"),
@@ -52,7 +52,7 @@ object Languages {
         Lang("hu", "匈牙利语"),
         Lang("id", "印尼语"),
         Lang("is", "冰岛语"),
-        Lang("iw", "希伯来语", rtl = true),
+        Lang("iw", "希伯来语"),
         Lang("ka", "格鲁吉亚语"),
         Lang("kn", "卡纳达语"),
         Lang("lt", "立陶宛语"),
@@ -75,17 +75,15 @@ object Languages {
         Lang("tl", "菲律宾语"),
         Lang("tr", "土耳其语"),
         Lang("uk", "乌克兰语"),
-        Lang("ur", "乌尔都语", rtl = true),
+        Lang("ur", "乌尔都语"),
         Lang("zh", "中文")
     )
 
     private val BY_CODE: Map<String, Lang> = ALL.associateBy { it.code }
 
-    fun get(code: String): Lang? = BY_CODE[code]
 
     fun name(code: String): String = BY_CODE[code]?.name ?: code
 
-    fun isRtl(code: String): Boolean = BY_CODE[code]?.rtl == true
 
     /** 选定目标语言后，可以作为源语言的语言（排除目标自身）。 */
     fun sourcesFor(target: String): List<Lang> = ALL.filter { it.code != target }
