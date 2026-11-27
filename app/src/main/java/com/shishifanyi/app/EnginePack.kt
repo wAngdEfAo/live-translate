@@ -58,8 +58,21 @@ object EnginePack {
 
     fun pairDir(ctx: Context, key: String): File = File(packsDir(ctx), key)
 
-    /**
-     * 该方向的模型是否齐全。
+    /** 清掉上次替换中断留下的 `<key>.old-<ts>` 目录（147MB 一份，会被算进占用、也会被打进导出包）。 */
+    fun sweepOrphans(ctx: Context) {
+        try {
+            val dir = packsDir(ctx)
+            dir.listFiles()?.forEach { f ->
+                if (f.isDirectory && (f.name.startsWith(".") || f.name.contains(".old-"))) {
+                    if (f.deleteRecursively()) Log.d(TAG, "清理残留目录: " + f.name)
+                }
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "清理残留失败: " + t.message)
+        }
+    }
+
+    /** 该方向的模型是否齐全。
      * 有清单时连大小一起核对 —— 半截 decoder 不能被当成「已安装」，
      * 否则 ORT 建会话报错，屏幕就会整片留白。
      */
@@ -180,6 +193,7 @@ object EnginePack {
     fun importZip(ctx: Context, open: () -> java.io.InputStream?): Pair<Boolean, String> {
         val rootDir = root(ctx)
         if (!rootDir.exists() && !rootDir.mkdirs()) return false to "无法创建模型目录"
+        sweepOrphans(ctx)
         manifestSizes(ctx)
         val avail = try {
             rootDir.usableSpace

@@ -62,6 +62,10 @@ object AppCore {
     @Volatile
     private var truncStreak = 0
 
+    /** truncStreak 是给哪一屏累计的：换屏必须清零，否则新屏一上来就吃 5 秒退避。 */
+    @Volatile
+    private var truncKey: String = ""
+
     private const val MIN_CAPTURE_GAP = 600L
 
     /** 截断标记：拼在指纹后面，表示「这一屏只处理了一部分」。 */
@@ -449,8 +453,13 @@ object AppCore {
                     continue
                 }
                 // 引擎按设置挑：默认 ML Kit；选了高精度且是英⇄中长句时才用 ONNX
-                val engine = if (reach != null) Engines.pick(reach, effSrc, tgt, b.text)
+                var engine = if (reach != null) Engines.pick(reach, effSrc, tgt, b.text)
                 else Engines.pick(effSrc, tgt, b.text)
+                // 这一句上一轮刚超时过：直接走 ML Kit。
+                // 否则截断重试每轮从第 0 块重来，那几块又要先白等 6 秒。
+                if (engine === OnnxEngine && OnnxEngine.coolingDown(b.text)) {
+                    engine = MlKitEngine
+                }
                 val hit = engine.peek(effSrc, tgt, b.text)
                 if (hit != null && hit.isNotBlank()) {
                     pairs.add(Pair(b, hit))
@@ -469,6 +478,9 @@ object AppCore {
                 // 高精度单句可能要一两秒，给它更长的等待；ML Kit 保持原来的 2 秒
                 latch.await(if (engine === OnnxEngine) 6000L else 2L, TimeUnit.SECONDS)
                 if (!ok && engine === OnnxEngine) {
+                    // 这句在高精度上超时/失败了：记一笔，接下来两分钟不再拿它试 ONNX。
+                    // 不做这件事的话，截断重试每轮都会从第 0 块重来，每轮先白等 6 秒。
+                    OnnxEngine.markSlow(b.text)
                     // 高精度失败（模型损坏 / 会话加载不出来 / 超时）不能让这一块留空：
                     // 退回 ML Kit 再试一次。这是界面与 README 都承诺的行为。
                     val fallback = CountDownLatch(1)
@@ -528,6 +540,11 @@ object AppCore {
                         // 只翻译了一部分：不能记成「整屏已处理」，否则后半屏再也不翻；
                         // 但也不能不设防 —— 否则以 300–600ms 的节奏无限重跑，
                         // 每轮都翻出前一两块再超时，永远推进不到后面。
+                        // 计数按屏幕隔离：换了屏就是新的一轮，不该继承上一屏的退避级别。
+                        if (truncKey != key) {
+                            truncKey = key
+                            truncStreak = 0
+                        }
                         truncStreak++
                         lastKey = key + PARTIAL_SUFFIX + truncStreak
                         val wait = if (truncStreak >= 2) 5000L else 1200L
@@ -535,6 +552,7 @@ object AppCore {
                         Log.d(TAG, "本轮被预算截断（第 $truncStreak 次），退避 ${wait}ms")
                     } else {
                         truncStreak = 0
+                        truncKey = ""
                         lastKey = key
                     }
                     val joined = pairs.joinToString("\n") { it.second }

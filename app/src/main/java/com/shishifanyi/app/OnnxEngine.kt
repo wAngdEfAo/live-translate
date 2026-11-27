@@ -29,6 +29,9 @@ object OnnxEngine : TransEngine {
 
     /** 去重表上限：超过就退化为不去重，避免无限增长。 */
     private const val MAX_INFLIGHT = 32
+
+    /** 超时过的句子在这么久内不再走高精度。 */
+    private const val COOLDOWN_MS = 120_000L
     private const val IDLE_MS = 180_000L
 
     override val id: String = "onnx"
@@ -356,18 +359,44 @@ object OnnxEngine : TransEngine {
     /**
      * 内存压力专用。
      *
-     * 不能在推理进行中从别的线程 close 会话：ORT 的 close/run 没有并发保证，
-     * 而 encResult 持有的张量内存属于该会话的 arena —— 更可能是 use-after-free 的原生崩溃
-     * （进程直接死，捕获不到），偏偏又在内存最紧张时触发。
-     * 所以这里只置标记，等推理自然退出后在同一个线程里释放。
+     * 不能在别的线程 close 会话：ORT 的 close/run 没有并发保证，而 encResult 持有的张量
+     * 属于该会话的 arena —— 更可能是 use-after-free 的原生崩溃（进程直接死，捕获不到）。
+     * 即使此刻 active == 0 也不能直接关：另一个线程可能正好 incrementAndGet() 并排上任务、
+     * ensureLoaded 已经拿到会话引用。所以统一置标记，并往 exec 投一个空任务，
+     * 让清理发生在推理线程的空闲边界上。
      */
     fun releaseUnderPressure() {
-        if (active.get() > 0) {
-            releasePending = true
-            Log.d(TAG, "内存压力：有推理在跑，等它退出后释放")
-            return
+        releasePending = true
+        try {
+            exec.execute {
+                if (active.get() == 0) closeNow("内存压力") else {
+                    Log.d(TAG, "内存压力：仍有推理在跑，等它退出后释放")
+                }
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "投递释放任务失败: " + t.message)
         }
-        closeNow("内存压力")
+    }
+
+    /**
+     * 高精度某句是否刚超时/失败过。超时的句子下一轮直接走 ML Kit：
+     * 否则截断重试会每轮从第 0 块重来，而那几块又要先等 6 秒超时。
+     */
+    private val cooldown = object : LinkedHashMap<String, Long>(32, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?): Boolean =
+            size > 64
+    }
+
+    fun coolingDown(text: String): Boolean = synchronized(cooldown) {
+        val until = cooldown[text] ?: return false
+        if (until > System.currentTimeMillis()) true else {
+            cooldown.remove(text)
+            false
+        }
+    }
+
+    fun markSlow(text: String) = synchronized(cooldown) {
+        cooldown[text] = System.currentTimeMillis() + COOLDOWN_MS
     }
 
     /** 真正关会话；只在确认没有推理在跑时调用（Idle 线程或推理线程自己）。 */

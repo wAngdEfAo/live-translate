@@ -445,8 +445,10 @@ class OcrService : Service() {
     }
 
     /**
-     * 采样判断内容区域是不是「一片纯色」。只取中间 80%，避开状态栏与导航栏 ——
-     * FLAG_SECURE 只涂黑应用内容，系统栏照常可见，按整帧判断会永远判不出来。
+     * 采样判断内容区域是不是「一片纯黑」。两个条件缺一不可：
+     *  - 中间 80% 区域亮度极差很小（避开状态栏/导航栏，FLAG_SECURE 只涂黑应用内容）
+     *  - 且整体很暗（亮度上限 ≤ 48）—— 纯白/浅色空白页同样"纯色"，
+     *    只按极差判断会把它们误报成安全窗口
      */
     private fun looksBlank(bmp: android.graphics.Bitmap): Boolean {
         return try {
@@ -470,7 +472,7 @@ class OcrService : Service() {
                 }
                 x += stepX
             }
-            max - min <= 6
+            max - min <= 6 && max <= 48
         } catch (t: Throwable) {
             false
         }

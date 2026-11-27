@@ -129,6 +129,9 @@ object EngineDownloader {
                 return REUSE_ID
             }
             if (dest.exists()) dest.delete()
+            // 新任务清零进度基线：否则 startDlPolling 会把 lastDlBytes 恢复成上一轮的
+            // 完成值，grew 全程为 false，仅 Wi-Fi 守卫整段失效
+            Prefs.engineDlBytes = 0L
             val req = DownloadManager.Request(Uri.parse(url))
                 .setTitle("实时翻译 · 高精度模型包")
                 .setDescription("英→中 / 中→英，约 294MB")

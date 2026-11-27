@@ -64,6 +64,9 @@ class MainActivity : Activity() {
     /** onSaveInstanceState 里带过来的自测文本（重建后回填）。 */
     private var pendingTestText: String? = null
 
+    /** 首页「翻译与语言」摘要的基础文本，用来识别异步回填是否已被新一轮覆盖。 */
+    private var transSummaryBase: String = ""
+
     /** 首页四个入口的副标题（显示实时状态）。 */
     private var secTransDesc: TextView? = null
     private var secAccessDesc: TextView? = null
@@ -170,11 +173,10 @@ class MainActivity : Activity() {
             currentSection = sec
             setContentView(buildSection(sec))
             pendingTestText?.let { t -> onnxTestIn?.setText(t) }
-            refresh()
         } else {
             setContentView(buildUi())
-            refresh()
         }
+        // 不在这里 refresh()：onCreate 之后紧跟 onResume，两处都刷会重复起后台线程
         installBackHandler()
         applyBarAppearance()
         askNotificationPermission()
@@ -190,7 +192,7 @@ class MainActivity : Activity() {
         super.onResume()
         refresh()
         // 上次挂着下载：回到前台就接着显示进度，已完成则直接导入
-        if (Prefs.engineDlId >= 0) {
+        if (Prefs.engineDlId != EngineDownloader.NO_TASK) {
             engineDlState?.text = "检查下载状态…"
             startDlPolling()
         }
@@ -323,7 +325,7 @@ class MainActivity : Activity() {
         clearUiRefs()
         setContentView(buildSection(id))
         refresh()
-        if (id == SEC_TRANS && Prefs.engineDlId >= 0) startDlPolling()
+        if (id == SEC_TRANS && Prefs.engineDlId != EngineDownloader.NO_TASK) startDlPolling()
     }
 
     private fun showHome() {
@@ -332,7 +334,7 @@ class MainActivity : Activity() {
         clearUiRefs()
         setContentView(buildUi())
         refresh()
-        if (Prefs.engineDlId >= 0) startDlPolling()
+        if (Prefs.engineDlId != EngineDownloader.NO_TASK) startDlPolling()
     }
 
     /** 切屏时清掉旧控件引用，免得 refresh() 往已经不在界面上的 TextView 里写。 */
@@ -937,11 +939,17 @@ class MainActivity : Activity() {
     private fun startEngineDownload() {
         if (blockedByWifiOnly()) return
         val id = EngineDownloader.start(this)
-        if (id < 0) {
+        if (id == EngineDownloader.NO_TASK) {
             toast("没有可用的下载地址，长按按钮可复制地址自行下载")
             return
         }
         engineDlState?.setTextColor(color(R.color.fg_dim))
+        if (id == EngineDownloader.REUSE_ID) {
+            // 本地已有完整文件（上次下完但导入失败）：直接校验 + 导入，别再下一次 294MB
+            engineDlState?.text = "已有完整模型包，正在校验并导入…"
+            importDownloadedEngine()
+            return
+        }
         engineDlState?.text = "准备下载…"
         startDlPolling()
         toast(if (Prefs.engineWifiOnly) "开始下载（仅 Wi-Fi）" else "开始下载")
@@ -1372,11 +1380,16 @@ class MainActivity : Activity() {
         secAboutDesc?.text = "版本 " + versionLabel()
 
         if (Prefs.engine == Engines.ENGINE_ONNX && secTransDesc != null) {
+            // 一次性算好基础文本并记下来：onCreate/onResume/showSection 会并发触发多次 refresh，
+            // 若各自起线程再拼接到"当前文本"上，就会拼出「（已装 1 个方向）（已装 1 个方向）」
             val base = secTransDesc?.text?.toString() ?: return
+            transSummaryBase = base
             Thread {
                 val n = EnginePack.installed(this).size
                 runOnUiThread {
-                    secTransDesc?.text = base + "（已装 $n 个方向）"
+                    if (transSummaryBase == base) {
+                        secTransDesc?.text = base + "（已装 $n 个方向）"
+                    }
                 }
             }.start()
         }
