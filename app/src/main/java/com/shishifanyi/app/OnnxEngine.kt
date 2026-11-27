@@ -32,6 +32,9 @@ object OnnxEngine : TransEngine {
 
     /** 超时过的句子在这么久内不再走高精度。 */
     private const val COOLDOWN_MS = 120_000L
+
+    /** 压力释放后多久之内不重建会话。 */
+    private const val PRESSURE_COOL_MS = 60_000L
     private const val IDLE_MS = 180_000L
 
     override val id: String = "onnx"
@@ -66,6 +69,10 @@ object OnnxEngine : TransEngine {
     @Volatile
     private var releasePending = false
 
+    /** 压力释放后的静默期截止时间：这段时间内不再重建会话。 */
+    @Volatile
+    private var noLoadUntil = 0L
+
     private val idleClose = Runnable { release() }
 
     /** 同句去重：同一句已经在队列里跑，就把回调挂上去，别重复压任务。 */
@@ -76,13 +83,33 @@ object OnnxEngine : TransEngine {
     /** 至少装了一个方向，用于整屏判一次是否启用高精度。 */
     fun isAnyInstalled(): Boolean {
         val ctx = AppCore.context() ?: return false
-        return EnginePack.isInstalled(ctx, "en_zh") || EnginePack.isInstalled(ctx, "zh_en")
+        return installedNow(ctx).isNotEmpty()
     }
 
-    fun isInstalled(src: String, tgt: String): Boolean {
-        val ctx = AppCore.context() ?: return false
-        val key = EnginePack.pairKey(src, tgt) ?: return false
-        return EnginePack.isInstalled(ctx, key)
+    /**
+     * 已装方向集合的短时缓存：`Engines.reach` 只在整屏开头算一次，
+     * 但 translate() 每块还会来问一次「这个方向装了吗」，一次就是 3 次 stat + 清单查表。
+     * 5 秒 TTL 足够，因为装机/删包不会在一屏之内发生。
+     */
+    @Volatile
+    private var installedAt = 0L
+
+    @Volatile
+    private var installedPairs: Set<String> = emptySet()
+
+    private fun installedNow(ctx: Context): Set<String> {
+        val now = System.currentTimeMillis()
+        val cached = installedPairs
+        if (now - installedAt < 5000L && cached.isNotEmpty()) return cached
+        val fresh = try {
+            EnginePack.installed(ctx).map { it.first }.toSet()
+        } catch (t: Throwable) {
+            Log.w(TAG, "读取已装模型失败: " + t.message)
+            cached
+        }
+        installedPairs = fresh
+        installedAt = now
+        return fresh
     }
 
     override fun peek(src: String, tgt: String, text: String): String? = synchronized(cache) {
@@ -121,7 +148,7 @@ object OnnxEngine : TransEngine {
             cb("高精度引擎只支持英⇄中", "")
             return
         }
-        if (!EnginePack.isInstalled(ctx, pair)) {
+        if (pair !in installedNow(ctx)) {
             cb("高精度模型未安装", "")
             return
         }
@@ -192,6 +219,12 @@ object OnnxEngine : TransEngine {
             val e = enc
             val d = dec
             if (t != null && e != null && d != null) return t to (e to d)
+        }
+        // 刚因内存压力释放过：这段时间内不重建，直接报错让调用方回退 ML Kit。
+        // 与「失败回退」是同一条路径，只是省掉一次 146MB 的读盘与分配。
+        val until = noLoadUntil
+        if (until > 0L && System.currentTimeMillis() < until) {
+            throw IllegalStateException("模型刚因内存压力释放，稍后重建")
         }
         closeSessions()
         tokenizer = null
@@ -370,6 +403,11 @@ object OnnxEngine : TransEngine {
      */
     fun releaseUnderPressure() {
         releasePending = true
+        // 关键：释放后要有一段「别再加载」的静默期。
+        // 否则队列里下一个任务会立刻进 ensureLoaded 重新读 146MB 模型 ——
+        // 而触发释放的正是内存最紧张的时刻，"释放"就变成了"关掉再打开"，
+        // LMK 压力下下一次分配就可能被杀或 OOM。
+        noLoadUntil = System.currentTimeMillis() + PRESSURE_COOL_MS
         try {
             exec.execute {
                 if (active.get() == 0) closeNow("内存压力") else {

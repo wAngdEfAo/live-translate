@@ -251,16 +251,16 @@ object AppCore {
     @Volatile
     private var noSourceHintShown = false
 
-    /** 安全窗口（FLAG_SECURE）：读不到字不是 App 的问题，说清楚一次就好。 */
+    /** 一屏纯黑且 OCR 也读不出字：可能是安全窗口，也可能只是全黑画面。文案要保守。 */
     private fun hintSecureWindow() {
         if (secureHintShown) return
         secureHintShown = true
         val c = app ?: return
-        Log.w(TAG, "当前界面截屏为纯色（安全窗口），无法识别文字")
+        Log.w(TAG, "这一屏接近纯黑且 OCR 无输出，判定为不可识别")
         main.post {
             try {
                 android.widget.Toast.makeText(
-                    c, "当前界面禁止截屏（安全窗口），读不到文字", android.widget.Toast.LENGTH_LONG
+                    c, "这一屏没有可识别的文字（可能是禁止截屏的界面）", android.widget.Toast.LENGTH_LONG
                 ).show()
             } catch (t: Throwable) {
                 Log.w(TAG, "提示失败: " + t.message)

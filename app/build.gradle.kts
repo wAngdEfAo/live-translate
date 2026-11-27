@@ -21,8 +21,8 @@ android {
         applicationId = "com.shishifanyi.app"
         minSdk = 24
         targetSdk = 36
-        versionCode = 76
-        versionName = "5.5.8"
+        versionCode = 77
+        versionName = "5.5.9"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")
