@@ -188,15 +188,20 @@ object OnnxEngine : TransEngine {
         // 同一句已经在队列里跑：挂到它的回调上，不再压一份任务。
         // 但表本身要有上限：屏幕滚动时 key 会不断变化，而 AppCore 6 秒后就不再等，
         // 回调留在表里直到任务跑完；不设上限这张表会一直涨。
+        //
+        // 去重 key 必须区分「旁路测量」：连点「精翻这段」时上一轮往往还没跑完，
+        // 若共用同一个 key，第 2 次会挂到上一轮的回调上 —— 量到的是"上一轮的剩余时间"，
+        // 比真实单次短且随点击间隔漂移，正好污染测量。
+        val inflightKey = if (useCache) key else key + "|fresh"
         var registered = false
         synchronized(inflight) {
-            val waiters = inflight[key]
+            val waiters = inflight[inflightKey]
             if (waiters != null) {
                 waiters.add(cb)
                 return
             }
             if (inflight.size < MAX_INFLIGHT) {
-                inflight[key] = mutableListOf(cb)
+                inflight[inflightKey] = mutableListOf(cb)
                 registered = true
             }
         }
@@ -218,7 +223,7 @@ object OnnxEngine : TransEngine {
                 if (releasePending && active.get() == 0) closeNow("内存压力（延迟）")
                 scheduleIdleClose()
             }
-            val waiters = if (registered) synchronized(inflight) { inflight.remove(key) } else null
+            val waiters = if (registered) synchronized(inflight) { inflight.remove(inflightKey) } else null
             if (waiters != null) {
                 for (w in waiters) {
                     try {
@@ -473,6 +478,13 @@ object OnnxEngine : TransEngine {
 
     /** 是否正在等待释放（与 25 秒静默期是两个不同的闸门，日志要分开说）。 */
     fun isReleasing(): Boolean = releasePending
+
+    /** 静默期还剩多少毫秒（0 表示不在静默期）。 */
+    fun silenceLeftMs(): Long {
+        val until = noLoadUntil
+        val left = until - System.currentTimeMillis()
+        return if (left > 0) left else 0L
+    }
 
     /** 是否处于压力释放后的静默期（选择器据此直接走 ML Kit，免得每块都白调度一次）。 */
     fun isSilenced(): Boolean {

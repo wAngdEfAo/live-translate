@@ -1177,7 +1177,20 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams.WRAP_CONTENT
         )
         testLp.topMargin = dp(8f)
-        advBody.addView(smallBtn("精翻这段", R.color.ok) { runEngineTest() }, testLp)
+        val testRow = LinearLayout(this)
+        testRow.orientation = LinearLayout.HORIZONTAL
+        testRow.setPadding(0, dp(8f), 0, 0)
+        advBody.addView(testRow)
+        testRow.addView(smallBtn("精翻这段", R.color.ok) { runEngineTest() },
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { rightMargin = dp(8f) })
+        // 固定基准句：跨版本/跨机型对比必须用同一句，否则中位数没有可比性
+        testRow.addView(smallBtn("填入基准句", R.color.fg_dim) {
+            onnxTestIn?.setText(Latency.BENCH)
+            onnxTestIn?.setSelection(onnxTestIn?.text?.length ?: 0)
+        })
 
         return card
     }
@@ -1299,6 +1312,13 @@ class MainActivity : Activity() {
             return
         }
         onnxTestOut?.setTextColor(color(R.color.fg_dim))
+        // 静默期内点这个按钮只会拿到"模型刚释放"的报错，容易以为坏了；直接说清楚
+        if (OnnxEngine.isSilenced()) {
+            val left = OnnxEngine.silenceLeftMs()
+            onnxTestOut?.setTextColor(color(R.color.warn))
+            onnxTestOut?.text = "内存压力静默期，约 " + ((left + 999) / 1000) + " 秒后再测"
+            return
+        }
         onnxTestOut?.text = "翻译中…"
         // 走旁路：不查缓存也不写缓存。否则同一句连点十次，第 2 次起全是缓存命中（几毫秒），
         // 中位数会被填成"很快"，结论与真实解码耗时正好相反。
@@ -1307,7 +1327,7 @@ class MainActivity : Activity() {
         OnnxEngine.translateFresh(src, tgt, input) { err, out ->
             runOnUiThread {
                 val ms = System.currentTimeMillis() - t0
-                if (err == null) Latency.record(key, ms)
+                if (err == null) Latency.record(key, ms, input.length)
                 val n = Latency.count(key)
                 val p50 = Latency.median(key)
                 onnxTestOut?.setTextColor(color(if (err != null) R.color.warn else R.color.ok))
@@ -1316,7 +1336,9 @@ class MainActivity : Activity() {
                 } else {
                     "→ " + out + "\n用时 " + ms + "ms" +
                         (if (!loadedBefore) "（含加载模型）" else "") +
-                        "；" + pairName(key) + " 近 " + n + " 次中位数 " + p50 + "ms" +
+                        "；输入 " + input.length + " 字符" +
+                        "\n" + pairName(key) + " 近 " + n + " 次：中位数 " + p50 + "ms" +
+                        "（min " + Latency.min(key) + " / max " + Latency.max(key) + "）" +
                         (if (p50 > 3000L) {
                             "\n提示：单句解码超过 3 秒，实时覆盖里大概率会超时回退 ML Kit"
                         } else {
