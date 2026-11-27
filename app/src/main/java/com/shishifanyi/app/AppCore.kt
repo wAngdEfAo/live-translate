@@ -182,7 +182,11 @@ object AppCore {
                 Log.d(TAG, "连续无内容，暂停取词 5 秒")
             }
             // 无障碍读不到字，才动 OCR
-            if (useOcr()) captureOcr(topY, maxY)
+            if (useOcr()) {
+                captureOcr(topY, maxY)
+            } else {
+                hintNoSource()
+            }
             return
         }
         emptyStreak = 0
@@ -204,6 +208,49 @@ object AppCore {
             if (c.isLetter() && c.code > 127) return false
         }
         return true
+    }
+
+    /** 只提示一次：安全窗口或 OCR 不可用，否则每次内容变化都弹一次太吵。 */
+    @Volatile
+    private var secureHintShown = false
+
+    @Volatile
+    private var noSourceHintShown = false
+
+    /** 安全窗口（FLAG_SECURE）：读不到字不是 App 的问题，说清楚一次就好。 */
+    private fun hintSecureWindow() {
+        if (secureHintShown) return
+        secureHintShown = true
+        val c = app ?: return
+        Log.w(TAG, "当前界面截屏为纯色（安全窗口），无法识别文字")
+        main.post {
+            try {
+                android.widget.Toast.makeText(
+                    c, "当前界面禁止截屏（安全窗口），读不到文字", android.widget.Toast.LENGTH_LONG
+                ).show()
+            } catch (t: Throwable) {
+                Log.w(TAG, "提示失败: " + t.message)
+            }
+        }
+    }
+
+    /** 无障碍读不到、OCR 又不可用：告诉用户该去开哪个开关。 */
+    private fun hintNoSource() {
+        if (noSourceHintShown) return
+        noSourceHintShown = true
+        val c = app ?: return
+        Log.w(TAG, "无障碍读不到内容，且 OCR 兜底不可用")
+        main.post {
+            try {
+                android.widget.Toast.makeText(
+                    c,
+                    "读不到屏幕文字：请打开「OCR 兜底」并授权截屏（微信/网页类界面需要）",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            } catch (t: Throwable) {
+                Log.w(TAG, "提示失败: " + t.message)
+            }
+        }
     }
 
     /**
@@ -289,6 +336,7 @@ object AppCore {
             // 只认自己这一轮：迟到的旧回调不许动新回合的状态
             if (round == ocrRound) ocrBusy = false
             if (!Prefs.translating) return@captureBlocks
+            if (list.isEmpty() && OcrBridge.consumeSecureFrame()) hintSecureWindow()
             // 和无障碍路径一样要带上 minY：从底部往上的区域，上半屏不该翻
             val filtered = TextPipeline.filter(list, maxY, Prefs.srcLang, topY)
             if (filtered.isNotEmpty()) process(filtered)

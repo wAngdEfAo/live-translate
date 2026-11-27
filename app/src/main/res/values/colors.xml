@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- 浅色（日间）调色板：values-night 里是深色同名色 -->
 <resources>
-    <color name="bg">#FF101214</color>
-    <color name="card">#FF1B1F24</color>
-    <color name="fg">#FFF2F4F7</color>
-    <color name="fg_dim">#FF9AA4B2</color>
-    <color name="accent">#FF4C9AFF</color>
-    <color name="ok">#FF3DD68C</color>
-    <color name="warn">#FFF5A524</color>
+    <color name="bg">#FFF6F7F9</color>
+    <color name="card">#FFFFFFFF</color>
+    <color name="fg">#FF17191C</color>
+    <color name="fg_dim">#FF666E7A</color>
+    <color name="accent">#FF2F6FED</color>
+    <color name="ok">#FF0F7B57</color>
+    <color name="warn">#FFB45309</color>
 </resources>

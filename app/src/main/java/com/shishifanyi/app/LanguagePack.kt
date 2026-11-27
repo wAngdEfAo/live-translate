@@ -182,7 +182,11 @@ object LanguagePack {
             return
         }
         busy = true
-        val cond = DownloadConditions.Builder().build()
+        // 「仅 Wi-Fi 下载」这个开关管所有模型下载：ML Kit 语言包走它自己的下载通道，
+        // 只有把条件塞进 DownloadConditions 才真正生效（以前这里是空条件，移动网络照下）
+        val condBuilder = DownloadConditions.Builder()
+        if (Prefs.engineWifiOnly) condBuilder.requireWifi()
+        val cond = condBuilder.build()
         downloadStep(src, tgt, models, 0, cond, cb)
     }
 
@@ -223,7 +227,16 @@ object LanguagePack {
                 }
                 .addOnFailureListener { e ->
                     busy = false
-                    cb(false, "下载失败（" + Languages.name(code) + "）：" + (e.message ?: "网络错误"))
+                    val hint = if (Prefs.engineWifiOnly) {
+                        "（已开启「仅 Wi-Fi 下载」，请连 Wi-Fi 或先关掉该开关）"
+                    } else {
+                        ""
+                    }
+                    cb(
+                        false,
+                        "下载失败（" + Languages.name(code) + "）：" +
+                            (e.message ?: "网络错误") + hint
+                    )
                 }
                 .addOnCanceledListener {
                     busy = false

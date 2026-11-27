@@ -36,6 +36,11 @@ class MainActivity : Activity() {
         private const val REQ_ENGINE_IMPORT = 1004
         private const val REQ_ENGINE_EXPORT = 1005
 
+        /** 首页的四个入口。 */
+        private const val SEC_TRANS = "translate"
+        private const val SEC_ACCESS = "access"
+        private const val SEC_APPEAR = "appear"
+
         // 导入 zip 的上限：条目数或解压体积任意一项超限就停止，避免把内部存储写满
         private const val MAX_ENTRY_COUNT = 200
         private const val MAX_TOTAL_BYTES = 256L * 1024 * 1024
@@ -50,21 +55,132 @@ class MainActivity : Activity() {
     private var startSwitch: Switch? = null
     private var showBtnRef: TextView? = null
 
+    /** 当前在哪个子页；null = 首页。 */
+    private var currentSection: String? = null
+
+    /** 首页四个入口的副标题（显示实时状态）。 */
+    private var secTransDesc: TextView? = null
+    private var secAccessDesc: TextView? = null
+    private var secAppearDesc: TextView? = null
+    private var secAboutDesc: TextView? = null
+
+    /** 主题在 attachBaseContext 里就要生效，早于 onCreate。 */
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(ThemeMode.wrap(newBase))
+    }
+
+    /** 子页按返回键回首页，而不是直接退出。 */
+    @Deprecated("Activity#onBackPressed")
+    override fun onBackPressed() {
+        if (currentSection != null) {
+            showHome()
+            return
+        }
+        @Suppress("DEPRECATION")
+        super.onBackPressed()
+    }
+
+    /**
+     * Android 13+ 侧边手势返回走的是 OnBackInvokedDispatcher，
+     * 只要不是「只在 onBackPressed 里拦」就能被绕过去 —— 表现就是从子页一划直接退出应用。
+     * 这里显式注册回调（配合 manifest 的 enableOnBackInvokedCallback），33 以下仍用 onBackPressed。
+     */
+    private fun installBackHandler() {
+        if (android.os.Build.VERSION.SDK_INT < 33) return
+        try {
+            onBackInvokedDispatcher.registerOnBackInvokedCallback(
+                android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT
+            ) {
+                if (currentSection != null) showHome() else finish()
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "注册返回回调失败: " + t.message)
+        }
+    }
+
+    /**
+     * 状态栏 / 导航栏内缩：targetSdk 36 起系统强制 edge-to-edge，
+     * 不自己处理 insets 的话内容会画到状态栏下面（「‹ 返回」压着时间就是这个）。
+     */
+    private fun applySystemBarPadding(v: View) {
+        v.setOnApplyWindowInsetsListener { view, insets ->
+            if (android.os.Build.VERSION.SDK_INT >= 30) {
+                val i = insets.getInsets(
+                    android.view.WindowInsets.Type.systemBars() or
+                        android.view.WindowInsets.Type.displayCutout()
+                )
+                view.setPadding(i.left, i.top, i.right, i.bottom)
+            } else {
+                @Suppress("DEPRECATION")
+                view.setPadding(
+                    insets.systemWindowInsetLeft,
+                    insets.systemWindowInsetTop,
+                    insets.systemWindowInsetRight,
+                    insets.systemWindowInsetBottom
+                )
+            }
+            insets
+        }
+        v.requestApplyInsets()
+    }
+
+    /** 浅色主题下状态栏图标要是深色，否则白底白字看不见。 */
+    private fun applyBarAppearance() {
+        val light = !ThemeMode.isDarkNow(this)
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 30) {
+                val c = window.insetsController ?: return
+                var mask = android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                mask = mask or android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+                c.setSystemBarsAppearance(
+                    if (light) mask else 0,
+                    mask
+                )
+            } else if (android.os.Build.VERSION.SDK_INT >= 23) {
+                @Suppress("DEPRECATION")
+                var flags = window.decorView.systemUiVisibility
+                flags = if (light) {
+                    flags or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+                } else {
+                    flags and View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR.inv()
+                }
+                @Suppress("DEPRECATION")
+                window.decorView.systemUiVisibility = flags
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "设置状态栏外观失败: " + t.message)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Prefs.init(this)
         AppCore.init(this)
         setContentView(buildUi())
+        installBackHandler()
+        applyBarAppearance()
         askNotificationPermission()
     }
 
     override fun onResume() {
         super.onResume()
         refresh()
+        // 上次挂着下载：回到前台就接着显示进度，已完成则直接导入
+        if (Prefs.engineDlId >= 0) {
+            engineDlState?.text = "检查下载状态…"
+            startDlPolling()
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        // 只是停止刷新界面；DownloadManager 自己会把下载跑完
+        stopDlPolling()
     }
 
     // ---------- 界面 ----------
 
+    /** 首页：只放标题、主操作和四个入口，其余都在子页里。 */
     private fun buildUi(): View {
         val scroll = ScrollView(this)
         scroll.setBackgroundColor(color(R.color.bg))
@@ -75,74 +191,226 @@ class MainActivity : Activity() {
         scroll.addView(root)
 
         root.addView(text("实时翻译", 26f, R.color.fg, true))
-        root.addView(text("屏幕上的外文，就地变成中文或英文", 13f, R.color.fg_dim, false).apply {
-            setPadding(0, dp(6f), 0, dp(20f))
-        })
-
-        // 三步引导
-        val step1 = stepCard(
-            "1. 无障碍权限",
-            "用来读取屏幕上的文字",
-            "去开启",
-            View.OnClickListener { openAccessibility() }
+        root.addView(
+            text(
+                "屏幕上的外文，就地变成中文或英文  ·  " + versionLabel(),
+                13f, R.color.fg_dim, false
+            ).apply { setPadding(0, dp(6f), 0, dp(18f)) }
         )
-        accState = step1.second
-        root.addView(step1.first)
 
-        val step2 = stepCard(
-            "2. 悬浮窗权限",
-            "译文需要一个悬浮小窗来显示",
-            "去开启",
-            View.OnClickListener { openOverlayPermission() }
-        )
-        ovState = step2.second
-        root.addView(step2.first)
-
-        val step3 = languageCard()
-        packState = step3.second
-        root.addView(step3.first)
-
-        // 存储占用
-        root.addView(storageCard())
-
-        // 高精度引擎（可选第二引擎）
-        root.addView(engineCard())
-
-        // ADB 开启无障碍
-        root.addView(adbCard())
-
-        // 反馈
-        root.addView(feedbackCard())
-
-        // 悬浮窗开关
+        // 每天真正会点的东西：显示/关闭悬浮窗
         val showBtn = TextView(this)
         showBtn.text = "显示悬浮窗"
         showBtn.textSize = 15f
         showBtn.gravity = Gravity.CENTER
         showBtn.setTextColor(color(R.color.bg))
         showBtn.background = rounded(R.color.accent, 12f)
-        showBtn.setPadding(dp(18f), dp(13f), dp(18f), dp(13f))
+        showBtn.setPadding(dp(18f), dp(14f), dp(18f), dp(14f))
         showBtn.isClickable = true
         showBtn.setOnClickListener { toggleOverlay() }
         showBtnRef = showBtn
-        val sbLp = LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT
-        )
-        sbLp.topMargin = dp(6f)
-        root.addView(showBtn, sbLp)
+        root.addView(showBtn)
 
-        // 开关区
+        root.addView(View(this), LinearLayout.LayoutParams(1, dp(18f)))
+
+        val (transRow, transDesc) = sectionRow("翻译与语言", "开始翻译 · 目标语言 · 语言包 · 高精度模型") {
+            showSection(SEC_TRANS)
+        }
+        secTransDesc = transDesc
+        root.addView(transRow)
+
+        val (accRow, accDesc) = sectionRow("权限与辅助", "无障碍 · 悬浮窗 · 一键开启 · OCR 兜底") {
+            showSection(SEC_ACCESS)
+        }
+        secAccessDesc = accDesc
+        root.addView(accRow)
+
+        val (appRow, appDesc) = sectionRow("外观、存储与反馈", "主题 · 占用 · 导出语言包 · 反馈") {
+            showSection(SEC_APPEAR)
+        }
+        secAppearDesc = appDesc
+        root.addView(appRow)
+
+        val (aboutRowView, aboutDesc) = sectionRow("关于", "版本 · 签名 · 许可 · 链接") {
+            openAbout()
+        }
+        secAboutDesc = aboutDesc
+        root.addView(aboutRowView)
+
+        val note = text(
+            "提示：译文只在内存里保留最近 3 条，不写入磁盘、不上传。",
+            12f, R.color.fg_dim, false
+        )
+        note.setPadding(0, dp(10f), 0, 0)
+        root.addView(note)
+
+        applySystemBarPadding(scroll)
+        return scroll
+    }
+
+    // ---------- 子页 ----------
+
+    private fun sectionTitle(id: String): String = when (id) {
+        SEC_TRANS -> "翻译与语言"
+        SEC_ACCESS -> "权限与辅助"
+        SEC_APPEAR -> "外观、存储与反馈"
+        else -> ""
+    }
+
+    /** 首页的一个入口行：标题 + 副标题（副标题用来显示实时状态）+ ›。 */
+    private fun sectionRow(
+        title: String,
+        desc: String,
+        onClick: () -> Unit
+    ): Pair<LinearLayout, TextView> {
         val card = LinearLayout(this)
         card.orientation = LinearLayout.VERTICAL
         card.background = rounded(R.color.card, 16f)
-        card.setPadding(dp(18f), dp(8f), dp(18f), dp(8f))
+        card.setPadding(dp(18f), dp(14f), dp(18f), dp(14f))
         val lp = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
         )
-        lp.topMargin = dp(18f)
-        root.addView(card, lp)
+        lp.bottomMargin = dp(10f)
+        card.layoutParams = lp
+        card.isClickable = true
+        card.setOnClickListener { onClick() }
+
+        val head = LinearLayout(this)
+        head.orientation = LinearLayout.HORIZONTAL
+        head.gravity = Gravity.CENTER_VERTICAL
+        card.addView(head)
+        head.addView(
+            text(title, 16f, R.color.fg, true),
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        )
+        head.addView(text("\u203a", 20f, R.color.fg_dim, false))
+
+        val d = text(desc, 12f, R.color.fg_dim, false)
+        d.setPadding(0, dp(5f), 0, 0)
+        card.addView(d)
+        return card to d
+    }
+
+    /** 进子页：整屏换成该分组的卡片，返回键回首页。 */
+    private fun showSection(id: String) {
+        currentSection = id
+        stopDlPolling()
+        clearUiRefs()
+        setContentView(buildSection(id))
+        refresh()
+        if (id == SEC_TRANS && Prefs.engineDlId >= 0) startDlPolling()
+    }
+
+    private fun showHome() {
+        currentSection = null
+        stopDlPolling()
+        clearUiRefs()
+        setContentView(buildUi())
+        refresh()
+        if (Prefs.engineDlId >= 0) startDlPolling()
+    }
+
+    /** 切屏时清掉旧控件引用，免得 refresh() 往已经不在界面上的 TextView 里写。 */
+    private fun clearUiRefs() {
+        accState = null
+        ovState = null
+        packState = null
+        startSwitch = null
+        showBtnRef = null
+        storageSize = null
+        langRows.clear()
+        langBox = null
+        expandBtn = null
+        currentLangLabel = null
+        autoHint = null
+        tgtChips.clear()
+        engineState = null
+        engineDlState = null
+        engineChips.clear()
+        themeChips.clear()
+        onnxTestIn = null
+        onnxTestOut = null
+        secTransDesc = null
+        secAccessDesc = null
+        secAppearDesc = null
+        secAboutDesc = null
+        langRowBusy = false
+    }
+
+    private fun buildSection(id: String): View {
+        val scroll = ScrollView(this)
+        scroll.setBackgroundColor(color(R.color.bg))
+        val root = LinearLayout(this)
+        root.orientation = LinearLayout.VERTICAL
+        root.setPadding(dp(20f), dp(22f), dp(20f), dp(28f))
+        scroll.addView(root)
+
+        val back = LinearLayout(this)
+        back.orientation = LinearLayout.HORIZONTAL
+        back.gravity = Gravity.CENTER_VERTICAL
+        back.setPadding(0, 0, 0, dp(4f))
+        back.isClickable = true
+        back.setOnClickListener { showHome() }
+        back.addView(text("\u2039 返回", 14f, R.color.accent, false))
+        root.addView(back)
+        root.addView(
+            text(sectionTitle(id), 20f, R.color.fg, true)
+                .apply { setPadding(0, dp(6f), 0, dp(14f)) }
+        )
+
+        when (id) {
+            SEC_TRANS -> {
+                root.addView(startCard())
+                val lc = languageCard()
+                packState = lc.second
+                root.addView(lc.first)
+                root.addView(engineCard())
+            }
+            SEC_ACCESS -> {
+                val s1 = stepCard(
+                    "1. 无障碍权限",
+                    "用来读取屏幕上的文字",
+                    "去开启",
+                    View.OnClickListener { openAccessibility() }
+                )
+                accState = s1.second
+                root.addView(s1.first)
+
+                val s2 = stepCard(
+                    "2. 悬浮窗权限",
+                    "译文需要一个悬浮小窗来显示",
+                    "去开启",
+                    View.OnClickListener { openOverlayPermission() }
+                )
+                ovState = s2.second
+                root.addView(s2.first)
+
+                root.addView(readCard())
+                root.addView(adbCard())
+            }
+            SEC_APPEAR -> {
+                root.addView(appearanceCard())
+                root.addView(storageCard())
+                root.addView(feedbackCard())
+            }
+        }
+        applySystemBarPadding(scroll)
+        return scroll
+    }
+
+    /** 开始翻译总开关。 */
+    private fun startCard(): LinearLayout {
+        val card = LinearLayout(this)
+        card.orientation = LinearLayout.VERTICAL
+        card.background = rounded(R.color.card, 16f)
+        card.setPadding(dp(18f), dp(10f), dp(18f), dp(10f))
+        val lp = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        )
+        lp.bottomMargin = dp(12f)
+        card.layoutParams = lp
 
         startSwitch = Switch(this)
         startSwitch!!.text = "开始翻译"
@@ -158,21 +426,33 @@ class MainActivity : Activity() {
             if (checked) ScreenReaderService.requestCapture()
         }
         card.addView(startSwitch)
+        return card
+    }
+
+    /** 读取方式：OCR 兜底 + 精准模式。 */
+    private fun readCard(): LinearLayout {
+        val card = LinearLayout(this)
+        card.orientation = LinearLayout.VERTICAL
+        card.background = rounded(R.color.card, 16f)
+        card.setPadding(dp(18f), dp(8f), dp(18f), dp(8f))
+        val lp = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        )
+        lp.bottomMargin = dp(12f)
+        card.layoutParams = lp
 
         card.addView(toggleRow("OCR 兜底（读不到文字时截屏识别）", Prefs.ocrFallback) { on ->
             Prefs.ocrFallback = on
+            // 默认是关的：没有截屏授权它跑不起来，打开时才去要权限
             if (on) ensureOcrPermission() else AppCore.syncOcrService()
         })
-        card.addView(toggleRow("精准模式（每次截图识别，更准但更费电）", Prefs.accurateMode) { Prefs.accurateMode = it })
-
-        val note = text(
-            "提示：译文只在内存里保留最近 3 条，不写入磁盘、不上传。",
-            12f, R.color.fg_dim, false
+        card.addView(
+            toggleRow("精准模式（每次截图识别，更准但更费电）", Prefs.accurateMode) {
+                Prefs.accurateMode = it
+            }
         )
-        note.setPadding(0, dp(18f), 0, 0)
-        root.addView(note)
-
-        return scroll
+        return card
     }
 
     private var storageSize: TextView? = null
@@ -320,7 +600,7 @@ class MainActivity : Activity() {
         imp.textSize = 13f
         imp.setTextColor(color(R.color.ok))
         imp.gravity = Gravity.CENTER
-        imp.background = rounded2(0x1AFFFFFF, 10f)
+        imp.background = rounded2(tintBg(), 10f)
         imp.setPadding(dp(18f), dp(9f), dp(18f), dp(9f))
         imp.isClickable = true
         imp.setOnClickListener { importPack() }
@@ -452,6 +732,7 @@ class MainActivity : Activity() {
                     }
                     return@runOnUiThread
                 }
+                if (blockedByWifiOnly()) return@runOnUiThread
                 packState?.text = "下载中"
                 packState?.setTextColor(color(R.color.accent))
                 val need = LanguagePack.neededModels(code, tgt).size
@@ -490,7 +771,7 @@ class MainActivity : Activity() {
             val on = code == tgt
             chip.setTextColor(color(if (on) R.color.bg else R.color.fg_dim))
             chip.background =
-                if (on) rounded(R.color.accent, 10f) else rounded2(0x1AFFFFFF, 10f)
+                if (on) rounded(R.color.accent, 10f) else rounded2(tintBg(), 10f)
         }
 
         // 列表收起时不去查 58 个模型的状态，省掉上百次查询；展开时再刷新
@@ -543,24 +824,139 @@ class MainActivity : Activity() {
             action.text = if (ready) "已就绪" else "下载"
             action.isClickable = !ready
             action.setTextColor(color(if (ready) R.color.ok else R.color.fg_dim))
-            action.background = rounded2(0x1AFFFFFF, 8f)
+            action.background = rounded2(tintBg(), 8f)
             return
         }
         if (ready) {
             action.text = "删除"
             action.setTextColor(color(R.color.warn))
-            action.background = rounded2(0x1AFFFFFF, 8f)
+            action.background = rounded2(tintBg(), 8f)
         } else {
             action.text = "下载"
             action.setTextColor(color(R.color.ok))
-            action.background = rounded2(0x1AFFFFFF, 8f)
+            action.background = rounded2(tintBg(), 8f)
         }
     }
 
     private var engineState: TextView? = null
+    private val themeChips = LinkedHashMap<String, TextView>()
+    private var engineDlState: TextView? = null
     private val engineChips = LinkedHashMap<String, TextView>()
     private var onnxTestIn: android.widget.EditText? = null
     private var onnxTestOut: TextView? = null
+
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var dlPolling = false
+
+    /** 上一轮看到的已下载字节，用来判断下载是否真的在跑（而不是被系统暂停）。 */
+    private var lastDlBytes = 0L
+
+    private val dlPoll = object : Runnable {
+        override fun run() {
+            if (!dlPolling) return
+            val st = EngineDownloader.status(this@MainActivity)
+            if (st != null) {
+                // 开着「仅 Wi-Fi」却发现不在 Wi-Fi 上、而且字节数还在涨：
+                // 说明这套系统没按 setAllowedOverMetered 拦（运营商 APN 被标成非计费网络时很常见），
+                // 那就由我们自己停掉，绝不让它继续吃流量。
+                if (Prefs.engineWifiOnly && st.running &&
+                    st.downloaded > lastDlBytes &&
+                    !EngineDownloader.isOnWifi(this@MainActivity)
+                ) {
+                    EngineDownloader.cancel(this@MainActivity)
+                    dlPolling = false
+                    lastDlBytes = 0L
+                    engineDlState?.setTextColor(color(R.color.warn))
+                    engineDlState?.text = "已停止：当前不是 Wi-Fi（已开启「仅 Wi-Fi 下载」）。连上 Wi-Fi 后重新点下载。"
+                    return
+                }
+                lastDlBytes = st.downloaded
+                engineDlState?.setTextColor(color(if (st.failed != null) R.color.warn else R.color.fg_dim))
+                engineDlState?.text = st.text()
+                if (st.done) {
+                    dlPolling = false
+                    importDownloadedEngine()
+                    return
+                }
+                if (st.failed != null) {
+                    dlPolling = false
+                    return
+                }
+            }
+            mainHandler.postDelayed(this, 800L)
+        }
+    }
+
+    /**
+     * 「仅 Wi-Fi 下载」打开时，当前又不是 Wi-Fi 就直接拒绝，并说清楚怎么继续。
+     * ML Kit 语言包与高精度模型包都受这个开关管。
+     */
+    private fun blockedByWifiOnly(): Boolean {
+        if (!Prefs.engineWifiOnly) return false
+        if (EngineDownloader.isOnWifi(this)) return false
+        toast("当前不是 Wi-Fi，已开启「仅 Wi-Fi 下载」；请连 Wi-Fi 或先关掉该开关")
+        return true
+    }
+
+    /** 下载模型包：交给系统 DownloadManager，断点续传与进度通知都由系统负责。 */
+    private fun startEngineDownload() {
+        if (blockedByWifiOnly()) return
+        val id = EngineDownloader.start(this)
+        if (id < 0) {
+            toast("没有可用的下载地址，长按按钮可复制地址自行下载")
+            return
+        }
+        engineDlState?.setTextColor(color(R.color.fg_dim))
+        engineDlState?.text = "准备下载…"
+        startDlPolling()
+        toast(if (Prefs.engineWifiOnly) "开始下载（仅 Wi-Fi）" else "开始下载")
+    }
+
+    private fun startDlPolling() {
+        if (dlPolling) return
+        dlPolling = true
+        mainHandler.postDelayed(dlPoll, 300L)
+    }
+
+    private fun stopDlPolling() {
+        dlPolling = false
+        mainHandler.removeCallbacks(dlPoll)
+    }
+
+    /** 下载完成后：校验 sha256 → 导入 → 删掉那个 294MB 的 zip。 */
+    private fun importDownloadedEngine() {
+        engineDlState?.setTextColor(color(R.color.fg_dim))
+        engineDlState?.text = "校验并导入中…（约 294MB，需要一会儿）"
+        Thread {
+            val result = EngineDownloader.importIfReady(this)
+            runOnUiThread {
+                if (result != null) {
+                    toast(result.second)
+                    engineDlState?.setTextColor(
+                        color(if (result.first) R.color.ok else R.color.warn)
+                    )
+                    engineDlState?.text = result.second
+                }
+                refreshEngineCard()
+                refreshStorage()
+            }
+        }.start()
+    }
+
+    private fun copyDownloadUrl() {
+        val url = EngineDownloader.primaryUrl(this)
+        if (url.isNullOrBlank()) {
+            toast("没有可用的下载地址")
+            return
+        }
+        try {
+            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            cm.setPrimaryClip(ClipData.newPlainText("engine", url))
+            toast("下载地址已复制，可用浏览器下载后点「导入 zip」")
+        } catch (t: Throwable) {
+            toast("复制失败：" + (t.message ?: ""))
+        }
+    }
 
     private fun pairName(k: String): String = when (k) {
         "en_zh" -> "英→中"
@@ -569,8 +965,40 @@ class MainActivity : Activity() {
     }
 
     /**
-     * 高精度引擎卡片：引擎切换、模型包导入导出、以及一个立刻能试出来的精翻输入框。
-     * 模型不进 APK（单方向约 146MB），必须单独导入。
+     * 可折叠小节：首页只看得到标题，展开才占地方。
+     * 首页原来一路排到底（语言包 + 存储 + 引擎 + 无障碍命令 + 反馈），要滑两三屏，
+     * 真正每天用的「显示悬浮窗 / 开始翻译」被埋在中间。
+     */
+    private fun collapsibleSection(title: String): Pair<LinearLayout, LinearLayout> {
+        val box = LinearLayout(this)
+        box.orientation = LinearLayout.VERTICAL
+        val head = LinearLayout(this)
+        head.orientation = LinearLayout.HORIZONTAL
+        head.gravity = Gravity.CENTER_VERTICAL
+        head.setPadding(dp(4f), dp(10f), dp(4f), dp(10f))
+        head.isClickable = true
+        box.addView(head)
+        head.addView(
+            text(title, 13f, R.color.fg_dim, true),
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        )
+        val arrow = text("展开 ▾", 12f, R.color.accent, false)
+        head.addView(arrow)
+        val body = LinearLayout(this)
+        body.orientation = LinearLayout.VERTICAL
+        body.visibility = View.GONE
+        box.addView(body)
+        head.setOnClickListener {
+            val show = body.visibility != View.VISIBLE
+            body.visibility = if (show) View.VISIBLE else View.GONE
+            arrow.text = if (show) "收起 ▴" else "展开 ▾"
+        }
+        return box to body
+    }
+
+    /**
+     * 高精度引擎卡片：引擎切换、模型包下载/导入、以及一个立刻能试出来的精翻输入框。
+     * 模型不进 APK（单方向约 146MB），必须单独下载或导入。
      */
     private fun engineCard(): LinearLayout {
         val card = LinearLayout(this)
@@ -587,8 +1015,7 @@ class MainActivity : Activity() {
         card.addView(text("高精度引擎（可选）", 15f, R.color.fg, true))
         card.addView(
             text(
-                "用 OPUS-MT 的 int8 模型做英⇄中精翻，长句更通顺，但比 ML Kit 慢很多。" +
-                    "模型不打进安装包：单方向约 146MB，需单独导入。实时覆盖默认仍走 ML Kit。",
+                "OPUS-MT int8 英⇄中，长句更通顺，但慢；模型 294MB 需单独下载。",
                 12f, R.color.fg_dim, false
             ).apply { setPadding(0, dp(6f), 0, dp(10f)) }
         )
@@ -617,42 +1044,66 @@ class MainActivity : Activity() {
             engineChips[code] = chip
         }
 
-        card.addView(toggleRow("仅长句用高精度（短文案仍走 ML Kit）", Prefs.onnxLongOnly) {
-            Prefs.onnxLongOnly = it
-            AppCore.resetDedupe()
-        })
-
         val st = text("检查中…", 12f, R.color.fg_dim, false)
-        st.setPadding(0, dp(4f), 0, dp(8f))
+        st.setPadding(0, dp(2f), 0, dp(8f))
         card.addView(st)
         engineState = st
 
         val row = LinearLayout(this)
         row.orientation = LinearLayout.HORIZONTAL
         card.addView(row)
-        val imp = smallBtn("导入模型包", R.color.accent) { importEnginePack() }
-        val impLp = LinearLayout.LayoutParams(
+        val dl = smallBtn("下载模型包", R.color.accent) { startEngineDownload() }
+        // 下载地址失效时（GitHub 换 CDN、被墙）长按复制，自己去浏览器下再导入
+        dl.setOnLongClickListener {
+            copyDownloadUrl()
+            true
+        }
+        val dlLp = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.WRAP_CONTENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
         )
-        impLp.rightMargin = dp(10f)
-        row.addView(imp, impLp)
+        dlLp.rightMargin = dp(10f)
+        row.addView(dl, dlLp)
+        row.addView(smallBtn("导入 zip", R.color.ok) { importEnginePack() })
+
+        val state = text("", 11.5f, R.color.fg_dim, false)
+        state.setPadding(0, dp(6f), 0, 0)
+        card.addView(state)
+        engineDlState = state
+
+        // 其余设置与自测收进折叠区：首页不再被这些占掉一屏
+        val (advBox, advBody) = collapsibleSection("高级（自测 / 下载选项）")
+        advBox.setPadding(0, dp(6f), 0, 0)
+        card.addView(advBox)
+
+        advBody.addView(toggleRow("仅长句用高精度（短文案仍走 ML Kit）", Prefs.onnxLongOnly) {
+            Prefs.onnxLongOnly = it
+            AppCore.resetDedupe()
+        })
+        advBody.addView(toggleRow("仅 Wi-Fi 下载模型（语言包与高精度模型都算）", Prefs.engineWifiOnly) {
+            Prefs.engineWifiOnly = it
+        })
+
+        val row2 = LinearLayout(this)
+        row2.orientation = LinearLayout.HORIZONTAL
+        row2.setPadding(0, dp(2f), 0, 0)
+        advBody.addView(row2)
         val exp = smallBtn("导出", R.color.fg_dim) { exportEnginePack() }
         val expLp = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.WRAP_CONTENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
         )
         expLp.rightMargin = dp(10f)
-        row.addView(exp, expLp)
-        row.addView(smallBtn("删除", R.color.warn) { removeEnginePack() })
+        row2.addView(exp, expLp)
+        row2.addView(smallBtn("删除", R.color.warn) { removeEnginePack() })
 
         // 精翻自测：直接翻一段，看效果也看耗时
         val input = android.widget.EditText(this)
-        input.hint = "在这里输入一句原文，试试高精度引擎"
+        input.hint = "输入一句原文，试试高精度引擎"
         input.textSize = 13f
         input.setTextColor(color(R.color.fg))
         input.setHintTextColor(color(R.color.fg_dim))
-        input.setBackground(rounded2(0xFF0B0E12.toInt(), 10f))
+        input.setBackground(rounded2(inputBg(), 10f))
         input.setPadding(dp(12f), dp(10f), dp(12f), dp(10f))
         input.minLines = 2
         input.gravity = Gravity.TOP or Gravity.START
@@ -663,12 +1114,12 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams.WRAP_CONTENT
         )
         inputLp.topMargin = dp(10f)
-        card.addView(input, inputLp)
+        advBody.addView(input, inputLp)
         onnxTestIn = input
 
         val out = text("", 12.5f, R.color.ok, false)
         out.setPadding(0, dp(8f), 0, 0)
-        card.addView(out)
+        advBody.addView(out)
         onnxTestOut = out
 
         val testLp = LinearLayout.LayoutParams(
@@ -676,7 +1127,7 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams.WRAP_CONTENT
         )
         testLp.topMargin = dp(8f)
-        card.addView(smallBtn("精翻这段", R.color.ok) { runEngineTest() }, testLp)
+        advBody.addView(smallBtn("精翻这段", R.color.ok) { runEngineTest() }, testLp)
 
         return card
     }
@@ -698,7 +1149,7 @@ class MainActivity : Activity() {
             val sel = code == Prefs.engine
             chip.setTextColor(color(if (sel) R.color.bg else R.color.fg_dim))
             chip.background =
-                if (sel) rounded(R.color.accent, 10f) else rounded2(0x1AFFFFFF, 10f)
+                if (sel) rounded(R.color.accent, 10f) else rounded2(tintBg(), 10f)
         }
         val st = engineState ?: return
         Thread {
@@ -807,6 +1258,100 @@ class MainActivity : Activity() {
                 onnxTestOut?.text = if (err != null) err else "→ " + out + "（" + ms + "ms）"
             }
         }
+    }
+
+    /** 主题选择：浅色 / 深色 / 跟随系统。改完重建 Activity（颜色是资源，不会自动重绘）。 */
+    private fun appearanceRow(): LinearLayout {
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+        row.setPadding(dp(4f), dp(8f), dp(4f), dp(10f))
+        row.addView(text("主题：", 13f, R.color.fg, false))
+        themeChips.clear()
+        for (m in listOf(ThemeMode.LIGHT, ThemeMode.DARK, ThemeMode.SYSTEM)) {
+            val chip = TextView(this)
+            chip.text = ThemeMode.label(m)
+            chip.textSize = 12.5f
+            chip.gravity = Gravity.CENTER
+            chip.setPadding(dp(14f), dp(6f), dp(14f), dp(6f))
+            chip.isClickable = true
+            chip.setOnClickListener { applyTheme(m) }
+            val lp = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+            lp.rightMargin = dp(8f)
+            row.addView(chip, lp)
+            themeChips[m] = chip
+        }
+        refreshThemeChips()
+        return row
+    }
+
+    private fun refreshThemeChips() {
+        val cur = ThemeMode.current(this)
+        for ((m, chip) in themeChips) {
+            val sel = m == cur
+            chip.setTextColor(color(if (sel) R.color.bg else R.color.fg_dim))
+            chip.background = if (sel) rounded(R.color.accent, 10f) else rounded2(tintBg(), 10f)
+        }
+    }
+
+    private fun applyTheme(mode: String) {
+        if (ThemeMode.current(this) == mode) return
+        ThemeMode.save(this, mode)
+        recreate()
+    }
+
+    private fun openAbout() {
+        try {
+            startActivity(Intent(this, AboutActivity::class.java))
+        } catch (t: Throwable) {
+            toast("打不开关于页：" + (t.message ?: ""))
+        }
+    }
+
+    /** 首页四个入口的副标题：直接把当前状态写出来，点进去之前就能看到。 */
+    private fun updateSectionSummaries() {
+        if (secTransDesc == null && secAccessDesc == null) return
+        val tgt = Prefs.tgtLang
+        val eng = if (Prefs.engine == Engines.ENGINE_ONNX) "高精度" else "标准"
+        val packs = EnginePack.installed(this).size
+        secTransDesc?.text = targetName(tgt) + " · 引擎 " + eng +
+            (if (Prefs.engine == Engines.ENGINE_ONNX) "（已装 $packs 个方向）" else "") +
+            (if (Prefs.translating) " · 翻译中" else " · 已暂停")
+
+        val acc = isAccessibilityOn()
+        val ov = Settings.canDrawOverlays(this)
+        secAccessDesc?.text = "无障碍 " + (if (acc) "已开启" else "未开启") +
+            " · 悬浮窗 " + (if (ov) "已开启" else "未开启") +
+            " · OCR 兜底 " + (if (Prefs.ocrFallback) "开" else "关")
+
+        secAppearDesc?.text = "主题 " + ThemeMode.label(ThemeMode.current(this)) + " · 占用 / 导出 / 反馈"
+        secAboutDesc?.text = "版本 " + versionLabel()
+    }
+
+    /** 主题卡片（外观分组里）。 */
+    private fun appearanceCard(): LinearLayout {
+        val card = LinearLayout(this)
+        card.orientation = LinearLayout.VERTICAL
+        card.background = rounded(R.color.card, 16f)
+        card.setPadding(dp(18f), dp(12f), dp(18f), dp(12f))
+        val lp = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        )
+        lp.bottomMargin = dp(12f)
+        card.layoutParams = lp
+        card.addView(text("主题", 15f, R.color.fg, true))
+        card.addView(appearanceRow())
+        card.addView(
+            text(
+                "覆盖层控制条固定深色：它浮在任意内容（含白底网页）之上，浅色会看不清。",
+                11.5f, R.color.fg_dim, false
+            )
+        )
+        return card
     }
 
     private fun storageCard(): LinearLayout {
@@ -1107,10 +1652,10 @@ class MainActivity : Activity() {
         val code = TextView(this)
         code.text = cmd
         code.textSize = 10.5f
-        code.setTextColor(0xFF9AA4B2.toInt())
+        code.setTextColor(color(R.color.fg_dim))
         code.setTypeface(android.graphics.Typeface.MONOSPACE)
         code.setTextIsSelectable(true)
-        code.background = rounded2(0xFF0B0E12.toInt(), 10f)
+        code.background = rounded2(inputBg(), 10f)
         code.setPadding(dp(10f), dp(9f), dp(10f), dp(9f))
         card.addView(code)
 
@@ -1302,7 +1847,7 @@ class MainActivity : Activity() {
         b.textSize = 12.5f
         b.gravity = Gravity.CENTER
         b.setTextColor(color(colorRes))
-        b.background = rounded2(0x1AFFFFFF, 10f)
+        b.background = rounded2(tintBg(), 10f)
         b.setPadding(dp(16f), dp(8f), dp(16f), dp(8f))
         b.isClickable = true
         b.setOnClickListener { onClick() }
@@ -1407,6 +1952,12 @@ class MainActivity : Activity() {
 
     private fun color(res: Int): Int = if (android.os.Build.VERSION.SDK_INT >= 23) getColor(res) else resources.getColor(res)
 
+    /** 半透明底色：深色主题用白、浅色主题用黑，否则浅色卡片上根本看不见。 */
+    private fun tintBg(): Int = if (ThemeMode.isDarkNow(this)) 0x1AFFFFFF else 0x12000000
+
+    /** 输入框 / 代码块的底色。 */
+    private fun inputBg(): Int = if (ThemeMode.isDarkNow(this)) 0xFF0B0E12.toInt() else 0xFFEDEFF3.toInt()
+
     private fun dp(v: Float): Int = (resources.displayMetrics.density * v).toInt()
 
     // ---------- 状态与跳转 ----------
@@ -1457,6 +2008,7 @@ class MainActivity : Activity() {
     }
 
     private fun finishRefresh() {
+        updateSectionSummaries()
         refreshStorage()
         refreshLangRows()
         refreshEngineCard()
@@ -1582,6 +2134,7 @@ class MainActivity : Activity() {
 
     private fun downloadPack() {
         if (LanguagePack.busy) return
+        if (blockedByWifiOnly()) return
         val src = Prefs.srcLang
         val tgt = Prefs.tgtLang
         if (src == "auto") {

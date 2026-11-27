@@ -253,6 +253,7 @@ class OcrService : Service() {
     }
 
     private fun doCapture(cb: (List<TextBlock>) -> Unit, tries: Int) {
+        OcrBridge.clearSecureFrame()
         if (!ensureSurface()) {
             cb(emptyList())
             return
@@ -318,6 +319,17 @@ class OcrService : Service() {
         }
         val useBmp = ocrBmp ?: bmp
         keepSmall(useBmp, scale)
+        // 安全窗口（FLAG_SECURE）截出来是一整片纯色：识别不出字，也不必白跑一次 OCR
+        if (looksBlank(useBmp)) {
+            OcrBridge.markSecureFrame()
+            try {
+                useBmp.recycle()
+            } catch (ex: Throwable) {
+                Log.w(TAG, "OcrService@blank: " + ex.message)
+            }
+            cb(emptyList())
+            return
+        }
         recognizerOrCreate().process(InputImage.fromBitmap(useBmp, 0))
             .addOnSuccessListener { result ->
                 try {
@@ -438,6 +450,34 @@ class OcrService : Service() {
         return (0xFF shl 24) or ((ar / n) shl 16) or ((ag / n) shl 8) or (ab / n)
     }
 
+    /**
+     * 采样判断整帧是不是「一片纯色」。安全窗口截出来就是纯黑/纯白，
+     * 与其送进 OCR 白跑一趟，不如直接判定为不可识别并告诉上层。
+     */
+    private fun looksBlank(bmp: android.graphics.Bitmap): Boolean {
+        return try {
+            val stepX = (bmp.width / 16).coerceAtLeast(1)
+            val stepY = (bmp.height / 16).coerceAtLeast(1)
+            var min = 255
+            var max = 0
+            var x = 0
+            while (x < bmp.width) {
+                var y = 0
+                while (y < bmp.height) {
+                    val c = bmp.getPixel(x, y)
+                    val l = (((c shr 16) and 0xFF) + ((c shr 8) and 0xFF) + (c and 0xFF)) / 3
+                    if (l < min) min = l
+                    if (l > max) max = l
+                    y += stepY
+                }
+                x += stepX
+            }
+            max - min <= 6
+        } catch (t: Throwable) {
+            false
+        }
+    }
+
     private fun toBitmap(image: Image): Bitmap? {
         return try {
             val plane = image.planes[0]
@@ -519,6 +559,10 @@ object OcrBridge {
     @Volatile
     private var svc: OcrService? = null
 
+    /** 上一帧是不是「一片纯色」：安全窗口（FLAG_SECURE）被截出来就是这样。 */
+    @Volatile
+    private var secureFrame = false
+
     fun attach(s: OcrService) {
         svc = s
     }
@@ -528,6 +572,21 @@ object OcrBridge {
     }
 
     fun available(): Boolean = svc != null
+
+    fun clearSecureFrame() {
+        secureFrame = false
+    }
+
+    fun markSecureFrame() {
+        secureFrame = true
+    }
+
+    /** 取走并清掉「这帧是安全窗口」的标记。 */
+    fun consumeSecureFrame(): Boolean {
+        val v = secureFrame
+        secureFrame = false
+        return v
+    }
 
     fun captureBlocks(cb: (List<TextBlock>) -> Unit) {
         val s = svc

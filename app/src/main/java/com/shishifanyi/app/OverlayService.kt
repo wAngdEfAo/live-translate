@@ -131,6 +131,30 @@ class OverlayService : Service() {
     /** 控制条实测高度；布局完成前用经验值兜底。 */
     private fun barHeight(): Int = bar?.height?.takeIf { it > 0 } ?: dp(40f)
 
+    private fun barWidth(): Int = bar?.width?.takeIf { it > 0 } ?: dp(220f)
+
+    /** 存控制条位置：比例为主（跨方向自洽），绝对像素留给旧版本兼容。 */
+    private fun saveBarPosition(x: Int, y: Int) {
+        Prefs.barX = x
+        Prefs.barY = y
+        if (screenW > 0 && screenH > 0) {
+            Prefs.barXF = x.toFloat() / screenW
+            Prefs.barYF = y.toFloat() / screenH
+        }
+    }
+
+    /** 用户是否亲手摆过控制条（比例或旧的绝对坐标任一存在）。 */
+    private fun barCustomized(): Boolean = Prefs.barYF >= 0f || Prefs.barY >= 0
+
+    /**
+     * 把控制条的 x 夹回屏幕内。
+     * 横竖屏切换后宽度会变，竖屏摆到右边的控条在横屏里可能只剩半截。
+     */
+    private fun clampBarX(x: Int): Int {
+        val max = (screenW - barWidth() - dp(2f)).coerceAtLeast(0)
+        return x.coerceIn(0, max)
+    }
+
     /**
      * 把控制条的 y 夹回屏幕内。
      * 之前直接写 regionH + 6dp：底部模式下 regionH 等于全屏高，控制条会被推到屏幕
@@ -151,6 +175,34 @@ class OverlayService : Service() {
         return clampBarY(y)
     }
 
+    /**
+     * 按当前屏幕尺寸重新摆放控制条，并夹进可见区。
+     * 旋转、分屏、折叠屏切换、以及启动时都走这里 —— 之前只有创建时夹一次，
+     * 手动摆过控条的人一转横屏就把它丢到屏幕外，且没有入口能找回来。
+     */
+    private fun placeBar() {
+        val b = bar ?: return
+        val bp = barLp ?: return
+        val x = when {
+            Prefs.barXF >= 0f -> clampBarX((Prefs.barXF * screenW).toInt())
+            Prefs.barX >= 0 -> clampBarX(Prefs.barX)
+            else -> dp(8f)
+        }
+        val y = when {
+            Prefs.barYF >= 0f -> clampBarY((Prefs.barYF * screenH).toInt())
+            Prefs.barY >= 0 -> clampBarY(Prefs.barY)
+            else -> clampBarY(defaultBarY() - insetY)
+        }
+        if (x == bp.x && y == bp.y) return
+        bp.x = x
+        bp.y = y
+        try {
+            wm.updateViewLayout(b, bp)
+        } catch (ex: Throwable) {
+            Log.w(TAG, "OverlayService@placeBar: " + ex.message)
+        }
+    }
+
     /** 只更新分界线位置与标签；块层固定覆盖全屏，靠坐标过滤区域。 */
     private fun updateRegion() {
         val (t, b) = AppCore.regionBounds()
@@ -160,7 +212,9 @@ class OverlayService : Service() {
         val line = lineWin
         if (line != null) {
             val lp = line.layoutParams as WindowManager.LayoutParams
-            lp.y = (y - dp(6f) - liveLayerOffsetY()).coerceAtLeast(0)
+            // 上下都夹：横屏后原来贴着底部的那条线可能已经落到屏幕外
+            lp.y = (y - dp(6f) - liveLayerOffsetY())
+                .coerceIn(0, (screenH - dp(30f)).coerceAtLeast(0))
             try {
                 wm.updateViewLayout(line, lp)
             } catch (ex: Throwable) {
@@ -168,19 +222,7 @@ class OverlayService : Service() {
             }
         }
         // 用户没有手动摆过控制条时，让它跟着区域走（切换上/下、拖边界都要跟着挪）
-        val bv = bar
-        val bp = barLp
-        if (bv != null && bp != null && Prefs.barY < 0) {
-            val ny = clampBarY(defaultBarY() - insetY)
-            if (ny != bp.y) {
-                bp.y = ny
-                try {
-                    wm.updateViewLayout(bv, bp)
-                } catch (ex: Throwable) {
-                    Log.w(TAG, "OverlayService@137: " + ex.message)
-                }
-            }
-        }
+        if (!barCustomized()) placeBar()
         val pct = Math.round(Prefs.regionRatio * 100).toString()
         lineLabel?.text = pct + "% " + (if (Prefs.regionFromTop) "上" else "下")
     }
@@ -261,6 +303,8 @@ class OverlayService : Service() {
         }
         lastRenderKey = ""
         renderBlocks(lastBlocks)
+        // 旋转/分屏后控制条与分界线都要按新屏幕重摆一次，否则会落在屏幕外
+        placeBar()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -391,21 +435,13 @@ class OverlayService : Service() {
                 val loc = IntArray(2)
                 row.getLocationOnScreen(loc)
                 insetY = loc[1] - (regionH - dp(6f))
-                // 把分界线挪回真正的区域边界
+                // 把分界线挪回真正的区域边界（上下都夹，横屏后原来贴底的线可能已经在屏外）
                 val rp = row.layoutParams as WindowManager.LayoutParams
-                rp.y = (regionH - dp(6f) - insetY).coerceAtLeast(0)
+                rp.y = (regionH - dp(6f) - insetY)
+                    .coerceIn(0, (screenH - dp(30f)).coerceAtLeast(0))
                 wm.updateViewLayout(row, rp)
-                // 控制条默认也贴到线下方
-                val b = bar
-                val bp = barLp
-                if (b != null && bp != null && Prefs.barY < 0) {
-                    bp.y = clampBarY(defaultBarY() - insetY)
-                    try {
-                        wm.updateViewLayout(b, bp)
-                    } catch (ex: Throwable) {
-                        Log.w(TAG, "OverlayService@362: " + ex.message)
-                    }
-                }
+                // 控制条：没摆过就贴默认位置，摆过就按比例换算回新屏幕
+                placeBar()
                 if (lastBlocks.isNotEmpty()) renderBlocks(lastBlocks, true)
             } catch (ex: Throwable) {
                 Log.w(TAG, "OverlayService@369: " + ex.message)
@@ -475,9 +511,17 @@ class OverlayService : Service() {
             PixelFormat.TRANSLUCENT
         )
         p.gravity = Gravity.TOP or Gravity.START
-        p.x = if (Prefs.barX >= 0) Prefs.barX else dp(8f)
-        // 存盘位置也要夹一次：旧版本可能已经把控制条存到屏幕外了
-        p.y = if (Prefs.barY >= 0) clampBarY(Prefs.barY) else clampBarY(defaultBarY() - insetY)
+        // 优先用比例（跨横竖屏自洽），退回旧的绝对坐标，两者都要夹进屏幕
+        p.x = when {
+            Prefs.barXF >= 0f -> clampBarX((Prefs.barXF * screenW).toInt())
+            Prefs.barX >= 0 -> clampBarX(Prefs.barX)
+            else -> dp(8f)
+        }
+        p.y = when {
+            Prefs.barYF >= 0f -> clampBarY((Prefs.barYF * screenH).toInt())
+            Prefs.barY >= 0 -> clampBarY(Prefs.barY)
+            else -> clampBarY(defaultBarY() - insetY)
+        }
         barLp = p
 
         var hDownX = 0f
@@ -515,9 +559,11 @@ class OverlayService : Service() {
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     val held = System.currentTimeMillis() - hDownAt
                     if (!hMoved && held > 600L) {
-                        // 长按把手：复位到默认位置
+                        // 长按把手：复位到默认位置（连比例一起清，否则转屏又被算回旧位置）
                         Prefs.barX = -1
                         Prefs.barY = -1
+                        Prefs.barXF = -1f
+                        Prefs.barYF = -1f
                         p.x = dp(8f)
                         p.y = clampBarY(defaultBarY() - insetY)
                         try {
@@ -528,14 +574,14 @@ class OverlayService : Service() {
                         Log.d("Overlay", "控制条已复位")
                     } else {
                         // 拖出屏幕后松手也要夹回来，否则下次启动找不回控制条
+                        p.x = clampBarX(p.x)
                         p.y = clampBarY(p.y)
                         try {
                             wm.updateViewLayout(row, p)
                         } catch (ex: Throwable) {
                             Log.w(TAG, "OverlayService@489: " + ex.message)
                         }
-                        Prefs.barX = p.x
-                        Prefs.barY = p.y
+                        saveBarPosition(p.x, p.y)
                     }
                     true
                 }
@@ -571,14 +617,14 @@ class OverlayService : Service() {
                 }
 
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    p.x = clampBarX(p.x)
                     p.y = clampBarY(p.y)
                     try {
                         wm.updateViewLayout(row, p)
                     } catch (ex: Throwable) {
                         Log.w(TAG, "OverlayService@527: " + ex.message)
                     }
-                    Prefs.barX = p.x
-                    Prefs.barY = p.y
+                    saveBarPosition(p.x, p.y)
                     true
                 }
 
@@ -589,18 +635,8 @@ class OverlayService : Service() {
         try {
             wm.addView(row, p)
             bar = row
-            // 布局完成才有真实高度：再夹一次，避免经验值偏小让控制条底部露出半截
-            row.post {
-                val ny = clampBarY(p.y)
-                if (ny != p.y) {
-                    p.y = ny
-                    try {
-                        wm.updateViewLayout(row, p)
-                    } catch (ex: Throwable) {
-                        Log.w(TAG, "OverlayService@551: " + ex.message)
-                    }
-                }
-            }
+            // 布局完成才有真实宽高：按它再摆一次，避免经验值偏小让控制条露出半截
+            row.post { placeBar() }
         } catch (t: Throwable) {
             bar = null
         }

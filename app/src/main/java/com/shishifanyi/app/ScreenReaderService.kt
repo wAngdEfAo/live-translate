@@ -39,6 +39,9 @@ class ScreenReaderService : AccessibilityService() {
     private val buf = ArrayList<TextBlock>(64)
     private val tmpRect = Rect()
 
+    /** 连续拿不到根节点的次数，只用于限流打日志。 */
+    private var nullStreak = 0
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         Prefs.init(this)
@@ -63,6 +66,9 @@ class ScreenReaderService : AccessibilityService() {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> 300L
             AccessibilityEvent.TYPE_VIEW_SCROLLED -> 600L
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> 400L
+            // WebView 翻页/加载常用这两个；以前没接，这类界面就永远不抓词
+            AccessibilityEvent.TYPE_WINDOWS_CHANGED -> 400L
+            AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> 700L
             else -> return
         }
         captureSoon(delay)
@@ -88,7 +94,19 @@ class ScreenReaderService : AccessibilityService() {
             rootInActiveWindow
         } catch (t: Throwable) {
             null
-        } ?: return
+        }
+        if (root == null) {
+            // 微信的阅读器 / 内嵌 WebView 经常拿不到根节点。这里以前直接 return，
+            // 于是「无障碍读不到 → 走 OCR 兜底」这条判断根本到不了，整屏静默不翻。
+            // 交一个空列表下去，让 AppCore 走去截屏识别。
+            nullStreak++
+            if (nullStreak == 1 || nullStreak % 10 == 0) {
+                Log.w(TAG, "拿不到根节点（$nullStreak 次），改走 OCR 兜底")
+            }
+            AppCore.onBlocks(emptyList())
+            return
+        }
+        nullStreak = 0
 
         nodeBudget = 0
         buf.clear()

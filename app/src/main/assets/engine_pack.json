@@ -1,0 +1,10 @@
+{
+  "version": "1.0",
+  "file": "live-translate-engine-opus-mt-int8.zip",
+  "bytes": 294096519,
+  "sha256": "c16b31cffbc56cdd014d6680aa46596b04e71d92b2d043db677e4f1300db3f2d",
+  "urls": [
+    "https://github.com/wAngdEfAo/live-translate/releases/download/v5.4.1/live-translate-engine-opus-mt-int8.zip"
+  ],
+  "note": "OPUS-MT Marian int8, en<->zh. 地址失效时可在 App 里长按「下载模型包」复制地址，自行下载后用「导入模型包」。"
+}
