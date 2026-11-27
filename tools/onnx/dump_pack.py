@@ -246,7 +246,7 @@ def build(tag: str, repo: str):
             "unk": int(tok.unk_token_id),
             "eos": int(tok.eos_token_id),
             "pad": int(tok.pad_token_id),
-            "decoder_start": 65000,
+            "decoder_start": int(tok.pad_token_id),   # Marian 用 pad 作为解码起始符，别写死 65000
             "max_len": 512,
         },
         "char_map": [[cp, s] for cp, s in sorted(cmap.items())],

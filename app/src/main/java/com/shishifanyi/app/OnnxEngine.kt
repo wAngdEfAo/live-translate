@@ -58,7 +58,16 @@ object OnnxEngine : TransEngine {
 
     private val idleClose = Runnable { release() }
 
+    /** 同句去重：同一句已经在队列里跑，就把回调挂上去，别重复压任务。 */
+    private val inflight = HashMap<String, MutableList<(String?, String) -> Unit>>()
+
     fun supports(src: String, tgt: String): Boolean = EnginePack.pairKey(src, tgt) != null
+
+    /** 至少装了一个方向，用于整屏判一次是否启用高精度。 */
+    fun isAnyInstalled(): Boolean {
+        val ctx = AppCore.context() ?: return false
+        return EnginePack.isInstalled(ctx, "en_zh") || EnginePack.isInstalled(ctx, "zh_en")
+    }
 
     fun isInstalled(src: String, tgt: String): Boolean {
         val ctx = AppCore.context() ?: return false
@@ -106,6 +115,15 @@ object OnnxEngine : TransEngine {
             cb("高精度模型未安装", "")
             return
         }
+        // 同一句已经在队列里跑：挂到它的回调上，不再压一份任务
+        synchronized(inflight) {
+            val waiters = inflight[key]
+            if (waiters != null) {
+                waiters.add(cb)
+                return
+            }
+            inflight[key] = mutableListOf(cb)
+        }
         active.incrementAndGet()
         exec.execute {
             var err: String? = null
@@ -121,7 +139,18 @@ object OnnxEngine : TransEngine {
                 active.decrementAndGet()
                 scheduleIdleClose()
             }
-            cb(err, out)
+            val waiters = synchronized(inflight) { inflight.remove(key) }
+            if (waiters != null) {
+                for (w in waiters) {
+                    try {
+                        w(err, out)
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "回调异常: " + t.message)
+                    }
+                }
+            } else {
+                cb(err, out)
+            }
         }
     }
 
@@ -151,13 +180,23 @@ object OnnxEngine : TransEngine {
         val dir = EnginePack.pairDir(ctx, pair)
         val nThreads = Runtime.getRuntime().availableProcessors().coerceIn(2, 4)
         val e = OrtEnvironment.getEnvironment()
-        val opts = OrtSession.SessionOptions().apply {
-            setIntraOpNumThreads(nThreads)
-            setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+        // SessionOptions 持有原生对象，用完必须 close，否则每次重载都漏一份
+        val opts = OrtSession.SessionOptions()
+        val se: OrtSession
+        val sd: OrtSession
+        try {
+            opts.setIntraOpNumThreads(nThreads)
+            opts.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+            Log.d(TAG, "加载模型 $pair (threads=$nThreads)")
+            se = e.createSession(File(dir, "encoder.onnx").absolutePath, opts)
+            sd = e.createSession(File(dir, "decoder.onnx").absolutePath, opts)
+        } finally {
+            try {
+                opts.close()
+            } catch (t: Throwable) {
+                Log.w(TAG, "释放 SessionOptions 失败: " + t.message)
+            }
         }
-        Log.d(TAG, "加载模型 $pair (threads=$nThreads)")
-        val se = e.createSession(File(dir, "encoder.onnx").absolutePath, opts)
-        val sd = e.createSession(File(dir, "decoder.onnx").absolutePath, opts)
         val t = MarianTokenizer.fromJson(
             org.json.JSONObject(
                 File(dir, "tokenizer.json").readText(Charsets.UTF_8)
@@ -209,6 +248,10 @@ object OnnxEngine : TransEngine {
             val prefix = IntArray(MAX_NEW_TOKENS + 1)
             prefix[0] = tok.decoderStartId
             var len = 1
+            // 贪心解码没有重复惩罚，Marian 偶尔会在个别句子上退化成死循环，
+            // 连续吐出同一个 token 就提前收尾，别把 96 步全烧在这上面
+            var prevTok = -1
+            var sameRun = 0
             while (len < prefix.size) {
                 val buf = LongArray(len) { prefix[it].toLong() }
                 val dt = OnnxTensor.createTensor(e, LongBuffer.wrap(buf), longArrayOf(1, len.toLong()))
@@ -242,6 +285,16 @@ object OnnxEngine : TransEngine {
                     dt.close()
                 }
                 if (next < 0 || next == tok.eosId) break
+                if (next == prevTok) {
+                    sameRun++
+                    if (sameRun >= 6) {
+                        Log.d(TAG, "解码退化（同 token 连发），提前结束")
+                        break
+                    }
+                } else {
+                    sameRun = 0
+                    prevTok = next
+                }
                 prefix[len] = next
                 len++
             }
@@ -270,8 +323,22 @@ object OnnxEngine : TransEngine {
             closeSessions()
             tokenizer = null
             loadedKey = null
-            synchronized(cache) { cache.clear() }
         }
+        // 文本缓存只有 60 条字符串，对内存没帮助；清掉只会让同一屏必须重新推理 146MB 的模型
+    }
+
+    /**
+     * 内存压力专用：即使还有请求在跑也立刻掐掉会话。
+     * 那一块会拿到「会话已关闭」的错误，由 AppCore 回退 ML Kit ——
+     * 比在内存最紧张的时候继续攥着 150MB 原生内存要好。
+     */
+    fun releaseUnderPressure() {
+        synchronized(this) {
+            closeSessions()
+            tokenizer = null
+            loadedKey = null
+        }
+        Log.d(TAG, "内存压力：强制释放 ONNX 会话")
     }
 
     private fun closeSessions() {

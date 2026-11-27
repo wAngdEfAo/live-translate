@@ -116,7 +116,13 @@ class MarianTokenizer private constructor(
     fun normalize(text: String): String {
         var s = text
         if (nfkcFirst) {
-            s = if (protect.isEmpty()) nfkc(s) else restore(nfkc(mask(s)))
+            // 占位符用的是 BMP 私用区：原文里恰好含这些字符时不能做掩码替换，
+            // 否则 restore() 会把原文的私用区字符换成保护字符（宁可放弃那点 NFKC 精度）
+            s = if (protect.isEmpty() || hasPlaceholder(s)) {
+                nfkc(s)
+            } else {
+                restore(nfkc(mask(s)))
+            }
             s = mapChars(s)
         } else {
             s = nfkc(mapChars(s))
@@ -185,6 +191,13 @@ class MarianTokenizer private constructor(
             if (off in protect.indices) sb.append(protect[off].toChar()) else sb.append(ch)
         }
         return sb.toString()
+    }
+
+    /** 原文里是否已经含占位符区间内的字符（那样就不能做掩码替换）。 */
+    private fun hasPlaceholder(s: String): Boolean {
+        val hi = PLACEHOLDER_BASE + protect.size
+        for (ch in s) if (ch.code >= PLACEHOLDER_BASE && ch.code < hi) return true
+        return false
     }
 
     private fun protectIndex(cp: Int): Int {

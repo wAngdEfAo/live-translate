@@ -49,10 +49,30 @@ object Engines {
     const val ENGINE_MLKIT = "mlkit"
     const val ENGINE_ONNX = "onnx"
 
-    fun pick(src: String, tgt: String, text: String): TransEngine {
-        if (Prefs.engine != ENGINE_ONNX) return MlKitEngine
+    /**
+     * 整屏判一次就够：设置里选了高精度 + 至少装了一个方向的模型。
+     * （以前每块都判，一屏 30 块就是上百次 Prefs 读取 + 文件 stat。）
+     */
+    fun onnxEnabled(): Boolean {
+        if (Prefs.engine != ENGINE_ONNX) return false
+        return OnnxEngine.isAnyInstalled()
+    }
+
+    /**
+     * 单块选引擎。
+     * @param onnxEnabled 用 [onnxEnabled] 在整屏开头算一次，逐块复用
+     */
+    fun pick(
+        src: String,
+        tgt: String,
+        text: String,
+        onnxEnabled: Boolean = onnxEnabled()
+    ): TransEngine {
+        if (!onnxEnabled) return MlKitEngine
         if (!OnnxEngine.supports(src, tgt)) return MlKitEngine
         if (!OnnxEngine.isInstalled(src, tgt)) return MlKitEngine
+        // 长段落：无 KV cache 的解码是 O(n²)，几千字符必然超预算，直接交给 ML Kit
+        if (text.length > Prefs.onnxMaxChars) return MlKitEngine
         if (Prefs.onnxLongOnly && text.length < Prefs.onnxMinChars) return MlKitEngine
         return OnnxEngine
     }

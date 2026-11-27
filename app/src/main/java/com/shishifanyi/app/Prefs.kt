@@ -57,6 +57,11 @@ object Prefs {
         get() = p.getInt("onnx_min_chars", 24)
         set(v) = p.edit().putInt("onnx_min_chars", v.coerceIn(1, 400)).apply()
 
+    /** 超过这个长度就不走高精度：无 KV cache 的解码是 O(n²)，几千字符必然超时。 */
+    var onnxMaxChars: Int
+        get() = p.getInt("onnx_max_chars", 400)
+        set(v) = p.edit().putInt("onnx_max_chars", v.coerceIn(64, 2000)).apply()
+
     /** 是否曾经成功授权过屏幕捕获；用于区分"从未授权"和"授权失效"。 */
     var ocrEverGranted: Boolean
         get() = p.getBoolean("ocr_ever_granted", false)

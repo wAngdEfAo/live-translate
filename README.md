@@ -82,8 +82,9 @@ keyPassword=你的密钥密码
 - 模型不进 APK：单方向 encoder 53MB + decoder 93MB ≈ 148MB，双向合计约 294MB
 - 装法：`高精度引擎 → 导入模型包`（zip），或换机前先 `导出`
 - 默认只在**长句**（≥24 字符）上用高精度，短 UI 文案仍走 ML Kit；可在界面关掉这个限制
-- 没装模型、语言对不是英⇄中、文本短于阈值时，`Engines.pick` 会直接选 ML Kit；
-  **推理过程中抛错不会自动改用 ML Kit 重试**（该块本轮留空）——模型包损坏时会表现为局部不翻译
+- 没装模型、语言对不是英⇄中、文本短于阈值或长于 400 字符时，`Engines.pick` 直接选 ML Kit；
+  **推理失败（模型损坏 / 会话加载不出来 / 超时）会自动用 ML Kit 重试那一段**，不会留空
+- 长于 400 字符的段落不走高精度：无 KV cache 的解码是 O(n²)，长段落必然超预算
 
 模型与推理链路的实测数据（桌面 CPU，4 线程，无 KV cache）：
 
@@ -161,10 +162,30 @@ App 里的「反馈」卡片可以直接打开这两个入口，并把版本号�
 
 ## 版本历史
 
+### 5.4.1
+- **修复 release 包会崩溃的问题**：`onnxruntime-android` 的 AAR 不带 consumer proguard 规则，
+  R8 把 `ai.onnxruntime.OrtException` 等类改名，而 JNI 按名字查找（`libonnxruntime4j_jni.so`
+  里有 444 个 `Java_ai_onnxruntime_*` 符号）→ 一进错误路径就 `NoClassDefFoundError`。
+  已加 `-keep class ai.onnxruntime.**`，并在 mapping 与 dex 里逐类核对
+- 修复 `effSrc` 把所有源语言的纯拉丁行都当英语：目标=中文时法语/西语/德语行被送进 en→zh
+  （绕过 X→en→目标），目标=英文时更是直接跳过不翻。现在只对日/韩生效
+- 高精度推理失败自动回退 ML Kit 重试（之前只是留空，与文档不符）
+- 截断保护：整屏预算用尽时不再把整屏指纹记成「已处理」，后半屏会在下次事件继续翻
+- ONNX 队列同句去重；`SessionOptions` 用后关闭（每次重载都漏）；内存压力下强制释放会话
+  （之前 `active>0` 时 release 只是重排定时器，等于没释放）；空闲释放不再清文本缓存
+- 超过 400 字符的块不走高精度；解码加退化保护（同 token 连发 6 次即收尾）
+- 模型包导入改为「解到临时目录 → 校验清单 size + sha256 → 整体替换」，
+  半截模型不会再被当成「已安装」；导入前检查剩余空间；兼容扁平 `en_zh/...` 布局
+- 整屏只判一次引擎可用性，不再每块读 Prefs + stat 模型文件
+- OCR 忙碌标记加回合号，迟到的旧回调不会清掉新一轮标记
+- `decoder_start` 由模型的 pad id 推导（模板不再写死 65000）
+- 分词器掩码改用「原文含私用区字符就跳过」，不会再把原文换掉
+- 单测覆盖英⇄中两个方向（7 个用例），夹具与发布 zip 同源
+
 ### 5.4.0
 - 新增可选高精度引擎：OPUS-MT（Marian）英⇄中 int8 ONNX 模型，模型包单独导入
   - 纯 Kotlin 的 Marian 分词器（无 JNI、无 protobuf）：sentencepiece 归一化 + unigram Viterbi + vocab.json 映射，与真实 `MarianTokenizer` 逐 id 对齐
-  - `TransEngine` 引擎抽象，默认实现仍是 ML Kit；选择阶段缺模型会自动用 ML Kit（推理失败不回退，见上）
+  - `TransEngine` 引擎抽象，默认实现仍是 ML Kit；选择阶段缺模型直接用 ML Kit，推理失败也会回退重试
   - 默认只在长句上用高精度，短文案仍走 ML Kit，避免拖慢实时覆盖
   - 模型包导入/导出/删除，占用与方向在界面上可见；附「精翻这段」自测入口
   - 内存压力与 3 分钟空闲时释放 ONNX 会话

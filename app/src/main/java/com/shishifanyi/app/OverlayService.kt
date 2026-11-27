@@ -171,7 +171,7 @@ class OverlayService : Service() {
         val bv = bar
         val bp = barLp
         if (bv != null && bp != null && Prefs.barY < 0) {
-            val ny = defaultBarY()
+            val ny = clampBarY(defaultBarY() - insetY)
             if (ny != bp.y) {
                 bp.y = ny
                 try {
@@ -477,7 +477,7 @@ class OverlayService : Service() {
         p.gravity = Gravity.TOP or Gravity.START
         p.x = if (Prefs.barX >= 0) Prefs.barX else dp(8f)
         // 存盘位置也要夹一次：旧版本可能已经把控制条存到屏幕外了
-        p.y = if (Prefs.barY >= 0) clampBarY(Prefs.barY) else defaultBarY()
+        p.y = if (Prefs.barY >= 0) clampBarY(Prefs.barY) else clampBarY(defaultBarY() - insetY)
         barLp = p
 
         var hDownX = 0f
@@ -519,7 +519,7 @@ class OverlayService : Service() {
                         Prefs.barX = -1
                         Prefs.barY = -1
                         p.x = dp(8f)
-                        p.y = defaultBarY()
+                        p.y = clampBarY(defaultBarY() - insetY)
                         try {
                             wm.updateViewLayout(row, p)
                         } catch (ex: Throwable) {
@@ -1027,17 +1027,25 @@ class OverlayService : Service() {
     @Suppress("DEPRECATION")
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        // 用白名单而不是 >=：BACKGROUND(40) 也 ≥ RUNNING_CRITICAL(15)，
-        // 按阈值判断会在进程进入后台 LRU 时清掉模型。
-        // 只认这三种明确的压力等级，UI_HIDDEN 与 BACKGROUND 都不清。
+        // 只认「明确的内存压力」：RUNNING_CRITICAL 是前台运行时最紧的档位，
+// MODERATE / COMPLETE 只在进程进了后台 LRU 才会送来。
+        // UI_HIDDEN 与 BACKGROUND 不动 —— 那是切个通知栏就来的信号，清了要重载。
         val pressure = level == android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL ||
             level == android.content.ComponentCallbacks2.TRIM_MEMORY_MODERATE ||
             level == android.content.ComponentCallbacks2.TRIM_MEMORY_COMPLETE
+        // ONNX 会话重载要读 146MB 模型，代价远高于 ML Kit，所以只在最紧的档位放
+        val hardPressure = level == android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL ||
+            level == android.content.ComponentCallbacks2.TRIM_MEMORY_COMPLETE
         if (pressure) {
             LanguagePack.releaseAll()
-            // 高精度引擎的会话占着 150MB 以上原生内存，压力下必须一起放掉
-            OnnxEngine.release()
-            Log.d("Overlay", "内存紧张，已释放翻译模型")
+        }
+        if (hardPressure) {
+            // 高精度引擎的会话占着 150MB 以上原生内存，压力下必须真放掉：
+            // release() 在有请求在跑时会推迟，那种情况下等于没释放
+            OnnxEngine.releaseUnderPressure()
+        }
+        if (pressure) {
+            Log.d("Overlay", "内存紧张（level=$level），已释放翻译模型")
         }
     }
 

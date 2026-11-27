@@ -40,6 +40,10 @@ object AppCore {
     @Volatile
     private var ocrStartedAt: Long = 0L
 
+    /** OCR 回合号：迟到的旧回调不许动新回合的忙碌标记。 */
+    @Volatile
+    private var ocrRound: Int = 0
+
     @Volatile
     private var lastCaptureAt: Long = 0L
 
@@ -55,6 +59,9 @@ object AppCore {
     private var failStreak = 0
 
     private const val MIN_CAPTURE_GAP = 600L
+
+    /** 截断标记：拼在指纹后面，表示「这一屏只处理了一部分」。 */
+    private const val PARTIAL_SUFFIX = "#part"
 
     /** OCR 回调超过这个时间没回来，就认为它不会再回来了。 */
     private const val OCR_STALE_MS = 6000L
@@ -199,6 +206,12 @@ object AppCore {
         return true
     }
 
+    /**
+     * 只有日/韩这种「文字过滤分不出英文标签」的源语言，才把纯拉丁行按英语处理。
+     * 其它源语言（法/西/德/俄…）的拉丁行必须按原语言路由，否则会绕过 X→en→目标 的中转。
+     */
+    private fun isCjkSourceWithLatinLabels(src: String): Boolean = src == "ja" || src == "ko"
+
     /** 目标语言判定结果缓存：句 → 语言码（只存成功结果，失败不入缓存） */
     private val detectCache = object : LinkedHashMap<String, String>(64, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean =
@@ -263,13 +276,18 @@ object AppCore {
             if (now - ocrStartedAt < OCR_STALE_MS) return
             Log.w(TAG, "OCR 回调超时未归，复位忙碌标记")
             ocrBusy = false
+            // 让上一轮那个迟到的回调作废，否则它回来时会把新一轮的忙碌标记清掉，
+            // 两轮抓取就会叠在一起
+            ocrRound++
         }
         if (now - lastCaptureAt < MIN_CAPTURE_GAP) return
         lastCaptureAt = now
         ocrStartedAt = now
         ocrBusy = true
+        val round = ++ocrRound
         OcrBridge.captureBlocks { list ->
-            ocrBusy = false
+            // 只认自己这一轮：迟到的旧回调不许动新回合的状态
+            if (round == ocrRound) ocrBusy = false
             if (!Prefs.translating) return@captureBlocks
             // 和无障碍路径一样要带上 minY：从底部往上的区域，上半屏不该翻
             val filtered = TextPipeline.filter(list, maxY, Prefs.srcLang, topY)
@@ -330,9 +348,20 @@ object AppCore {
             }
 
             val pairs = ArrayList<Pair<TextBlock, String>>(blocks.size)
+            // 本轮是否被预算/代次截断：截断时不能把整屏指纹认作「已处理」，
+            // 否则没轮到的后半屏要等内容或位置变才会重翻
+            var truncated = false
+            // 引擎可用性整屏只判一次，别每块都读 Prefs + stat 模型文件
+            val onnxReady = Engines.onnxEnabled()
             for (b in blocks) {
-                if (gen.get() != myGen) break
-                if (android.os.SystemClock.elapsedRealtime() > deadline) break
+                if (gen.get() != myGen) {
+                    truncated = true
+                    break
+                }
+                if (android.os.SystemClock.elapsedRealtime() > deadline) {
+                    truncated = true
+                    break
+                }
                 // 目标是英语时，逐块判断这块是不是本来就英文；是就不翻，避免"英译英"盖一层块。
                 // 必须逐块：一屏里中英西混排时，整屏判定只会按多数语言一刀切。
                 if (needTargetCheck && allAsciiLetters(b.text) && detected[b.text] == tgt) {
@@ -340,18 +369,22 @@ object AppCore {
                     continue
                 }
                 // 命中缓存的不再调用模型
-                // 拉丁字母行（日/韩界面里的英文标签）走英语直连：
-                // 把英文喂进 ja→en 模型只是白白多一跳，还掉质量
-                val effSrc =
-                    if (src != Languages.TARGET_EN && allAsciiLetters(b.text)) Languages.TARGET_EN
-                    else src
+                // 拉丁字母行只在「日/韩源语言」时才按英语处理：这两个语言的文字过滤看不出
+                // 英文标签，直接喂 ja→en 模型只是白白多一跳。
+                // 其他源语言绝不能这么干：法语/西语/德语里没有变音符号的行会被当成英语，
+                // 目标=中文时走 en→zh 翻出垃圾，目标=英文时干脆被 skipped 掉整屏不翻。
+                val effSrc = if (isCjkSourceWithLatinLabels(src) && allAsciiLetters(b.text)) {
+                    Languages.TARGET_EN
+                } else {
+                    src
+                }
                 if (effSrc == tgt) {
-                    // 本来就是目标语言（自动检测失败时常见），画上去只会英译英
+                    // 本来就是目标语言（拉丁标签行在英文目标下常见）
                     skipped++
                     continue
                 }
                 // 引擎按设置挑：默认 ML Kit；选了高精度且是英⇄中长句时才用 ONNX
-                val engine = Engines.pick(effSrc, tgt, b.text)
+                val engine = Engines.pick(effSrc, tgt, b.text, onnxReady)
                 val hit = engine.peek(effSrc, tgt, b.text)
                 if (hit != null && hit.isNotBlank()) {
                     pairs.add(Pair(b, hit))
@@ -369,6 +402,20 @@ object AppCore {
                 }
                 // 高精度单句可能要一两秒，给它更长的等待；ML Kit 保持原来的 2 秒
                 latch.await(if (engine === OnnxEngine) 6000L else 2L, TimeUnit.SECONDS)
+                if (!ok && engine === OnnxEngine) {
+                    // 高精度失败（模型损坏 / 会话加载不出来 / 超时）不能让这一块留空：
+                    // 退回 ML Kit 再试一次。这是界面与 README 都承诺的行为。
+                    val fallback = CountDownLatch(1)
+                    MlKitEngine.translate(effSrc, tgt, b.text) { err, t ->
+                        if (err == null && t.isNotBlank()) {
+                            zh = t
+                            ok = true
+                        }
+                        fallback.countDown()
+                    }
+                    fallback.await(2, TimeUnit.SECONDS)
+                    if (ok) Log.d(TAG, "高精度失败，已回退 ML Kit")
+                }
                 if (ok) {
                     pairs.add(Pair(b, zh))
                 } else {
@@ -411,8 +458,9 @@ object AppCore {
                     }
                     failStreak = 0
                     OverlayService.showBlocks(pairs)
-                    // 真的画上去才算这一屏处理过
-                    lastKey = key
+                    // 真的画上去才算这一屏处理过；被截断就只记「部分处理」，
+                    // 让下一次同屏事件接着翻剩下的块（已翻过的块走缓存，很便宜）
+                    lastKey = if (truncated) key + PARTIAL_SUFFIX else key
                     val joined = pairs.joinToString("\n") { it.second }
                     OverlayService.pushHistory(joined)
                 } finally {
