@@ -33,8 +33,8 @@ object OnnxEngine : TransEngine {
     /** 超时过的句子在这么久内不再走高精度。 */
     private const val COOLDOWN_MS = 120_000L
 
-    /** 压力释放后多久之内不重建会话。 */
-    private const val PRESSURE_COOL_MS = 60_000L
+    /** 压力释放后多久之内不重建会话。只需躲开释放瞬间的重分配高峰，不必太久。 */
+    private const val PRESSURE_COOL_MS = 25_000L
     private const val IDLE_MS = 180_000L
 
     override val id: String = "onnx"
@@ -80,11 +80,8 @@ object OnnxEngine : TransEngine {
 
     fun supports(src: String, tgt: String): Boolean = EnginePack.pairKey(src, tgt) != null
 
-    /** 至少装了一个方向，用于整屏判一次是否启用高精度。 */
-    fun isAnyInstalled(): Boolean {
-        val ctx = AppCore.context() ?: return false
-        return installedNow(ctx).isNotEmpty()
-    }
+    // isAnyInstalled() 已删除：它只在旧版 Engines.onnxEnabled() 里用过，
+    // 现在启用判定由 Engines.reach() 统一算一次。
 
     /**
      * 已装方向集合的短时缓存：`Engines.reach` 只在整屏开头算一次，
@@ -94,13 +91,17 @@ object OnnxEngine : TransEngine {
     @Volatile
     private var installedAt = 0L
 
+    /** 缓存是否有效。用独立标志而不是"集合非空"：一个模型都没装时也必须能命中缓存。 */
+    @Volatile
+    private var installedValid = false
+
     @Volatile
     private var installedPairs: Set<String> = emptySet()
 
     private fun installedNow(ctx: Context): Set<String> {
         val now = System.currentTimeMillis()
         val cached = installedPairs
-        if (now - installedAt < 5000L && cached.isNotEmpty()) return cached
+        if (installedValid && now - installedAt < 5000L) return cached
         val fresh = try {
             EnginePack.installed(ctx).map { it.first }.toSet()
         } catch (t: Throwable) {
@@ -109,6 +110,7 @@ object OnnxEngine : TransEngine {
         }
         installedPairs = fresh
         installedAt = now
+        installedValid = true
         return fresh
     }
 
@@ -406,9 +408,15 @@ object OnnxEngine : TransEngine {
      *   应当在需要时重建，而不是静默降级近一分钟还显示着「高精度」。
      */
     fun releaseUnderPressure(urgent: Boolean = true) {
-        releasePending = true
-        // 没有会话在用的时候，这次 trim 不该影响高精度的可用性
+        // 没有会话在用、也没有推理在跑：这次 trim 与高精度无关，什么都不用做。
+        // （否则会白打一条日志；更糟的是正好赶上某任务在 ensureLoaded、loadedKey 还没赋值，
+        //   会把刚读进来的会话在第一步就中止，白费一次 146MB 加载。）
         val hadSession = loadedKey != null || enc != null || dec != null
+        if (!hadSession && active.get() == 0) {
+            Log.d(TAG, "内存压力：高精度当前不在用，跳过")
+            return
+        }
+        releasePending = true
         if (urgent && hadSession) {
             // 释放后要有一段「别再加载」的静默期：否则队列里下一个任务会立刻进 ensureLoaded
             // 重新读 146MB —— 触发释放的正是内存最紧张的时刻，"释放"就变成"关掉再打开"。

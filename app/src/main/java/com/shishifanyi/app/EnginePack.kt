@@ -78,6 +78,12 @@ object EnginePack {
                 val idx = f.name.indexOf(".old-")
                 if (idx <= 0) return@forEach
                 val key = f.name.substring(0, idx)
+                // 这是全项目唯一「用目录名拼目标路径」的地方，必须白名单：
+                // 正常导入路径只会产生 en_zh / zh_en，其它名字一律当垃圾删掉，绝不 rename 进 packs/
+                if (key != "en_zh" && key != "zh_en") {
+                    if (f.deleteRecursively()) Log.w(TAG, "清理非法残留目录: " + f.name)
+                    return@forEach
+                }
                 val dest = pairDir(ctx, key)
                 if (!dest.exists()) {
                     // 上次替换在「改成 .old」之后崩了：把旧目录挪回去，别让这个方向丢包
@@ -189,7 +195,20 @@ object EnginePack {
     fun remove(ctx: Context, key: String): Boolean {
         return try {
             val d = pairDir(ctx, key)
-            val ok = !d.exists() || d.deleteRecursively()
+            val hadDest = d.exists()
+            var ok = !hadDest || d.deleteRecursively()
+            // 同时删掉中断替换留下的 <key>.old-*：否则这里看着"删掉了"（dest 不存在 → 返回 true），
+            // 下次启动 sweepOrphans 又把 .old-X 挪回 packs/<key>，模型复活。
+            try {
+                packsDir(ctx).listFiles()?.forEach { f ->
+                    if (f.isDirectory && f.name.startsWith("$key.old-")) {
+                        if (!f.deleteRecursively()) ok = false
+                    }
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "清理 $key 的残留目录失败: " + t.message)
+                ok = false
+            }
             if (ok) {
                 OnnxEngine.forget(key)
                 clearManifestCache()

@@ -164,6 +164,22 @@ App 里的「反馈」卡片可以直接打开这两个入口，并把版本号�
 
 ## 版本历史
 
+### 5.6.1
+- Q1：`remove()` 同时清 `packs/<key>.old-*`。否则「删除」看着成功（dest 不存在即返回 true），
+  下次启动 `sweepOrphans` 又把 `.old-X` 挪回来，模型复活
+- Q2：`sweepOrphans` 里唯一「用目录名拼目标路径」的地方加白名单（只认 `en_zh` / `zh_en`），
+  其它残留一律删除，不 rename 进 `packs/`
+- Q3：`releaseUnderPressure()` 在「没有会话且没有推理在跑」时直接返回，不再白打日志；
+  也堵住了「任务正卡在 `ensureLoaded`、`loadedKey` 还没赋值」这个窗口——原来会把刚读进来的
+  会话在第一步中止，白费一次 146MB 加载
+- Q4：静默期 60 秒 → 25 秒（只需躲开释放瞬间的重分配高峰）；`OverlayService.refreshForeground()`
+  也清一次静默期，只用悬浮窗不进设置页的用户不再吃满整段
+- Q5：`installedNow` 的缓存命中改用独立 `installedValid` 标志，未装任何模型时也能命中
+  （原来用 `cached.isNotEmpty()`，空结果永不命中）
+- Q6：删除死代码 `OnnxEngine.isAnyInstalled()`
+- Q7：`assets/engine_pack.json` 的下载地址指向 v5.6.0，并把 v5.4.1 作为第二个候选；
+  顺手修掉了这个文件里早就损坏的中文 `note`（之前被按 GB2312 写入过，全是乱码）
+
 ### 5.6.0
 - 修 S1：静默期原本由任何一次 `releaseUnderPressure()` 触发，而 `MODERATE/COMPLETE`
   在切后台时就会送来 —— 用户回到前台后近一分钟所有长句静默走 ML Kit，界面仍显示「高精度」。

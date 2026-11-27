@@ -84,6 +84,9 @@ class OverlayService : Service() {
         }
 
         fun refreshForeground() {
+            // 这不是 Activity 的生命周期回调，但每次开关翻译都会走这里：
+            // 只用悬浮窗、不进设置页的用户也能在这一刻恢复高精度可用性
+            OnnxEngine.clearSilence()
             inst?.updateNotification()
             inst?.renderBlocks(emptyList())
         }
