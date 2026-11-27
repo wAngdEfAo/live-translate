@@ -170,20 +170,23 @@ object AppCore {
         return true
     }
 
-    /** 目标语言判定结果缓存：句 → 语言码（null 表示识别失败）。 */
-    private val detectCache = object : LinkedHashMap<String, String?>(64, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String?>?): Boolean =
+    private const val LANG_UND = "und"
+
+    /** 目标语言判定结果缓存：句 → 语言码；用 "und" 表示"识别不出"，避免存 null。 */
+    private val detectCache = object : LinkedHashMap<String, String>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean =
             size > 256
     }
 
     @Synchronized
     private fun cachedLang(text: String): Pair<Boolean, String?> {
-        return if (detectCache.containsKey(text)) true to detectCache[text] else false to null
+        val v = detectCache[text] ?: return false to null
+        return true to if (v == LANG_UND) null else v
     }
 
     @Synchronized
     private fun rememberLang(text: String, lang: String?) {
-        detectCache[text] = lang
+        detectCache[text] = lang ?: LANG_UND
     }
 
     /**
@@ -192,27 +195,32 @@ object AppCore {
      */
     private fun detectBatch(texts: List<String>, budgetMs: Long): Map<String, String?> {
         // 用并发容器：await 超时返回后回调可能仍在写，普通 HashMap 跨线程读写不安全
-        val result = java.util.concurrent.ConcurrentHashMap<String, String?>()
+        val result = java.util.concurrent.ConcurrentHashMap<String, String>()
         val pending = ArrayList<String>(texts.size)
         for (t in texts) {
             val (has, lang) = cachedLang(t)
-            if (has) result[t] = lang else pending.add(t)
+            // 命中且确定语言才写入；命中但识别不出（null）当作未知，不进入结果
+            if (has && lang != null) result[t] = lang else if (!has) pending.add(t)
         }
-        if (pending.isEmpty()) return HashMap(result)
+        if (pending.isEmpty()) {
+            val early = HashMap<String, String?>(result.size * 2)
+            for ((k, v) in result) early[k] = v
+            return early
+        }
 
         val latch = CountDownLatch(pending.size)
         for (t in pending) {
             LanguageDetector.detectStrict(t) { lang ->
-                if (lang != null) {
-                    result[t] = lang
-                    rememberLang(t, lang)
-                }
+                if (lang != null) result[t] = lang
+                rememberLang(t, lang)
                 latch.countDown()
             }
         }
         latch.await(budgetMs, TimeUnit.MILLISECONDS)
         // 返回快照，调用方拿到的是稳定副本
-        return HashMap(result)
+        val snapshot = HashMap<String, String?>(result.size * 2)
+        for ((k, v) in result) snapshot[k] = v
+        return snapshot
     }
 
     private fun useOcr(): Boolean = Prefs.ocrFallback && OcrBridge.available()

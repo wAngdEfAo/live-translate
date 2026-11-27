@@ -253,31 +253,38 @@ class OcrService : Service() {
         }
         releaseSurface()   // 帧已拿到，立刻停止镜像
 
-        // 全分辨率 1440x3200 的 ARGB 约 18MB，识别前降到宽 ≤1080 可显著降低内存抖动
-        val ocrBmp: android.graphics.Bitmap
-        val scale: Float
+        // 全分辨率 ARGB 约 18MB，识别前降到宽 ≤1080 可显著降低内存抖动
+        var ocrBmp: android.graphics.Bitmap? = null
+        var scale = 1f
         if (bmp.width > OCR_MAX_WIDTH) {
             scale = OCR_MAX_WIDTH.toFloat() / bmp.width
-            ocrBmp = android.graphics.Bitmap.createScaledBitmap(
-                bmp,
-                OCR_MAX_WIDTH,
-                (bmp.height * scale).toInt().coerceAtLeast(1),
-                true
-            )
-            try {
-                bmp.recycle()
-            } catch (ex: Throwable) {
-                Log.w(TAG, "OcrService@249: " + ex.message)
+            ocrBmp = try {
+                android.graphics.Bitmap.createScaledBitmap(
+                    bmp,
+                    OCR_MAX_WIDTH,
+                    (bmp.height * scale).toInt().coerceAtLeast(1),
+                    true
+                )
+            } catch (t: Throwable) {
+                Log.w(TAG, "降采样失败，改用原图: " + t.message)
+                null
             }
-        } else {
-            scale = 1f
-            ocrBmp = bmp
+            if (ocrBmp != null) {
+                try {
+                    bmp.recycle()
+                } catch (ex: Throwable) {
+                    Log.w(TAG, "OcrService@249: " + ex.message)
+                }
+            } else {
+                scale = 1f          // 降采样失败则按原图处理，比例必须归位
+            }
         }
-        keepSmall(ocrBmp)
-        recognizer.process(InputImage.fromBitmap(ocrBmp, 0))
+        val useBmp = ocrBmp ?: bmp
+        keepSmall(useBmp, scale)
+        recognizer.process(InputImage.fromBitmap(useBmp, 0))
             .addOnSuccessListener { result ->
                 try {
-                    ocrBmp.recycle()
+                    useBmp.recycle()
                 } catch (ex: Throwable) {
                     Log.w(TAG, "OcrService@244: " + ex.message)
                 }
@@ -299,7 +306,7 @@ class OcrService : Service() {
             }
             .addOnFailureListener { e ->
                 try {
-                    bmp.recycle()
+                    useBmp.recycle()
                 } catch (ex: Throwable) {
                     Log.w(TAG, "OcrService@258: " + ex.message)
                 }
@@ -309,13 +316,20 @@ class OcrService : Service() {
     }
 
     /** 生成一张小图专门用于取色，省掉一张常驻全屏位图。 */
-    private fun keepSmall(bmp: Bitmap) {
+    /**
+     * @param baseScale 该位图相对**屏幕像素**的比例（降采样时 < 1）。
+     *   sampleColor 收到的是屏幕坐标，所以 smallScale 必须是"屏幕 → 缩略图"的总比例，
+     *   只按缩略图自身尺寸算会差一个降采样倍数，取色点会偏向右下并越界。
+     */
+    private fun keepSmall(bmp: Bitmap, baseScale: Float = 1f) {
         val old = smallFrame
         try {
             val maxDim = 720
-            val scale = maxDim.toFloat() / maxOf(bmp.width, bmp.height).coerceAtLeast(1)
-            smallFrame = if (scale < 1f) {
-                smallScale = scale
+            val shrink = maxDim.toFloat() / maxOf(bmp.width, bmp.height).coerceAtLeast(1)
+            val total = baseScale * shrink
+            val scale = shrink
+            smallFrame = if (shrink < 1f) {
+                smallScale = total
                 Bitmap.createScaledBitmap(
                     bmp,
                     (bmp.width * scale).toInt().coerceAtLeast(1),
@@ -323,8 +337,10 @@ class OcrService : Service() {
                     true
                 )
             } else {
-                smallScale = 1f
-                null
+                // 不再缩小：直接沿用该位图，但比例必须保留 baseScale，
+                // 否则降采样过的帧会被当成 1:1，取色又偏。
+                smallScale = baseScale
+                if (baseScale >= 1f) bmp else null
             }
         } catch (t: Throwable) {
             smallFrame = null
