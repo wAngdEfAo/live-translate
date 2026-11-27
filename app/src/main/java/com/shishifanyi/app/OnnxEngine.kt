@@ -135,16 +135,41 @@ object OnnxEngine : TransEngine {
         tgt: String,
         text: String,
         cb: (err: String?, out: String) -> Unit
+    ) = doTranslate(src, tgt, text, cb, useCache = true)
+
+    /**
+     * 旁路翻译：不查缓存、也不写缓存。
+     * 「精翻这段」必须走它 —— 否则同一句连点十次，第 2 次起全是缓存命中（几毫秒），
+     * 中位数被几毫秒填满，量出来的"很快"与真实解码耗时的结论正好相反。
+     */
+    fun translateFresh(
+        src: String,
+        tgt: String,
+        text: String,
+        cb: (err: String?, out: String) -> Unit
+    ) = doTranslate(src, tgt, text, cb, useCache = false)
+
+    /** 会话当前是否已加载（用来区分「含首次加载模型」的样本）。 */
+    fun isLoaded(): Boolean = loadedKey != null && enc != null && dec != null
+
+    private fun doTranslate(
+        src: String,
+        tgt: String,
+        text: String,
+        cb: (err: String?, out: String) -> Unit,
+        useCache: Boolean
     ) {
         if (text.isBlank()) {
             cb(null, "")
             return
         }
         val key = ck(src, tgt, text)
-        val hit = peek(src, tgt, text)
-        if (hit != null) {
-            cb(null, hit)
-            return
+        if (useCache) {
+            val hit = peek(src, tgt, text)
+            if (hit != null) {
+                cb(null, hit)
+                return
+            }
         }
         val ctx = AppCore.context()
         if (ctx == null) {
@@ -182,7 +207,8 @@ object OnnxEngine : TransEngine {
             try {
                 val loaded = ensureLoaded(ctx, pair)
                 out = greedy(loaded.first, loaded.second.first, loaded.second.second, text)
-                if (out.isNotBlank()) remember(key, out)
+                // 旁路测量（translateFresh）不写缓存：否则下一轮同样的句子又变成缓存命中
+                if (useCache && out.isNotBlank()) remember(key, out)
             } catch (t: Throwable) {
                 Log.w(TAG, "推理失败: " + t.message)
                 err = "高精度翻译失败：" + (t.message ?: "未知错误")

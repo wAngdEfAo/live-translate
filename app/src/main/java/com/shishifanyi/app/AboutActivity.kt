@@ -290,6 +290,7 @@ class AboutActivity : Activity() {
             append(android.os.Build.MODEL).append(" / ")
             append(android.os.Build.SUPPORTED_ABIS?.firstOrNull() ?: "?").append('\n')
             append("证书：").append(certSha256())
+            append('\n').append(Latency.summary())
         }
         try {
             val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager

@@ -473,6 +473,9 @@ object AppCore {
                 if (engine === OnnxEngine && OnnxEngine.coolingDown(b.text)) {
                     engine = MlKitEngine
                 }
+                // 释放状态要在发起翻译之前取：等 6 秒等待结束再取，closeNow 可能已经清掉标记，
+                // 日志就会退回"报错"，掩盖真实原因是内存压力
+                val releasing = engine === OnnxEngine && OnnxEngine.isReleasing()
                 val hit = engine.peek(effSrc, tgt, b.text)
                 if (hit != null && hit.isNotBlank()) {
                     pairs.add(Pair(b, hit))
@@ -490,8 +493,6 @@ object AppCore {
                 }
                 // 高精度单句可能要一两秒，给它更长的等待；ML Kit 保持原来的 2 秒
                 val finished = latch.await(if (engine === OnnxEngine) 6000L else 2L, TimeUnit.SECONDS)
-                // 先取一次状态：等我们自己回退完，closeNow 可能已经把 releasePending 清掉了
-                val releasing = engine === OnnxEngine && OnnxEngine.isReleasing()
                 if (!ok && engine === OnnxEngine) {
                     // 只有「等到超时」才进冷却。会话被内存压力关掉、模型被删、加载失败
                     // 都是错误路径，下一句应当重新加载再试，而不是让接着两分钟所有长句
