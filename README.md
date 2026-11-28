@@ -1,5 +1,7 @@
 # 实时翻译 / Live Translate
 
+**中文** · [English](README.en.md)
+
 Android 屏幕实时翻译：把屏幕上显示的外文**就地**换成中文或英文，只覆盖文字区域，空白与图片不受影响。
 
 ## 功能
